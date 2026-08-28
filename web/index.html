@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Codeit 本地版本下载与切换控制台" />
+    <title>Codeit · 版本控制台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Codeit 版本控制台首页">
+        <span class="brand-mark">C</span>
+        <span>
+          <strong>CODEIT</strong>
+          <small>VERSION CONTROL</small>
+        </span>
+      </a>
+      <div class="connection" id="connectionState" data-state="checking">
+        <span class="connection-dot"></span>
+        <span id="connectionText">正在连接本机服务</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">DEPLOYMENT CONSOLE / 01</p>
+          <h1>版本部署，<br /><em>一目了然。</em></h1>
+          <p class="hero-copy">从云端版本发现、包下载与校验，到本地版本切换，全流程集中控制。</p>
+        </div>
+        <div class="hero-side">
+          <div class="package-switcher">
+            <span>当前管理目标</span>
+            <input id="packageType" type="hidden" value="codeit-deploy" />
+            <div class="package-options" role="group" aria-label="选择软件包类型">
+              <button type="button" data-package-type="codeit-deploy" aria-pressed="true">
+                <strong>CODEIT</strong><small>主程序</small>
+              </button>
+              <button type="button" data-package-type="frontend" aria-pressed="false">
+                <strong>FRONTEND</strong><small>robot-platform</small>
+              </button>
+            </div>
+            <small id="packageHint">管理主程序版本与设备部署目录</small>
+          </div>
+          <div class="hero-version" aria-label="当前运行版本">
+            <span>当前版本</span>
+            <strong id="heroActiveVersion">—</strong>
+            <small id="deployRoot">等待本机服务响应</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings panel" aria-labelledby="settingsTitle">
+        <div class="section-heading compact">
+          <div>
+            <span class="section-index">配置</span>
+            <h2 id="settingsTitle">连接参数</h2>
+          </div>
+          <button class="text-button" type="button" id="saveSettingsButton">保存配置</button>
+        </div>
+        <div class="settings-grid">
+          <label class="field field-wide">
+            <span>本机插件 API</span>
+            <input id="apiBase" type="url" spellcheck="false" />
+          </label>
+          <label class="field field-wide">
+            <span>云端版本服务</span>
+            <input id="serverUrl" type="url" placeholder="http://192.168.2.100:28000" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>设备架构</span>
+            <select id="arch">
+              <option value="x86_64">x86_64</option>
+              <option value="aarch64">aarch64</option>
+              <option value="nvidia-orin">nvidia-orin</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>发布通道</span>
+            <select id="channel">
+              <option value="release">release</option>
+              <option value="test">test</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="task-panel panel" aria-labelledby="taskTitle">
+        <div class="section-heading">
+          <div>
+            <span class="section-index">实时任务</span>
+            <h2 id="taskTitle">下载流程</h2>
+          </div>
+          <span class="state-pill" id="taskState" data-state="idle">空闲</span>
+        </div>
+
+        <div class="task-summary">
+          <div>
+            <span class="summary-label">目标版本</span>
+            <strong id="targetVersion">暂无任务</strong>
+            <p id="taskMessage">可以从下方选择云端版本开始下载。</p>
+          </div>
+          <div class="progress-number"><strong id="progressValue">0</strong><span>%</span></div>
+        </div>
+
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressTrack">
+          <span id="progressBar"></span>
+        </div>
+        <div class="progress-meta">
+          <span id="downloadBytes">0 B / 0 B</span>
+          <button class="danger-button" type="button" id="cancelButton" disabled>取消任务</button>
+        </div>
+
+        <ol class="phase-list" id="phaseList">
+          <li data-phase="checking"><span>01</span><strong>检查</strong></li>
+          <li data-phase="downloading"><span>02</span><strong>下载</strong></li>
+          <li data-phase="verifying"><span>03</span><strong>校验</strong></li>
+          <li data-phase="extracting"><span>04</span><strong>解压</strong></li>
+          <li data-phase="activating"><span>05</span><strong>切换</strong></li>
+        </ol>
+      </section>
+
+      <section class="versions-section" aria-labelledby="remoteTitle">
+        <div class="section-heading outside">
+          <div>
+            <span class="section-index">云端</span>
+            <h2 id="remoteTitle">可用版本</h2>
+          </div>
+          <button class="primary-button" type="button" id="refreshRemoteButton">查询云端版本</button>
+        </div>
+        <div class="version-grid" id="remoteVersions">
+          <div class="empty-card">
+            <span>↗</span>
+            <p>尚未查询云端版本</p>
+            <small>设置版本服务地址后点击“查询云端版本”</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="versions-section" aria-labelledby="localTitle">
+        <div class="section-heading outside">
+          <div>
+            <span class="section-index">本机</span>
+            <h2 id="localTitle">已下载版本</h2>
+          </div>
+          <button class="icon-button" type="button" id="refreshLocalButton" aria-label="刷新本地版本">↻</button>
+        </div>
+        <div class="version-grid" id="localVersions">
+          <div class="empty-card"><p>正在读取本地版本…</p></div>
+        </div>
+      </section>
+
+      <section class="activity panel" aria-labelledby="activityTitle">
+        <div class="section-heading compact">
+          <div>
+            <span class="section-index">记录</span>
+            <h2 id="activityTitle">操作日志</h2>
+          </div>
+          <button class="text-button" type="button" id="clearLogButton">清空</button>
+        </div>
+        <ol id="activityLog" class="activity-log">
+          <li><time>--:--:--</time><span>控制台已就绪</span></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer>
+      <span>CODEIT VERSION CONTROL</span>
+      <span>LOCAL DEPLOYMENT INTERFACE</span>
+    </footer>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    <script src="./app.js" defer></script>
+  </body>
+</html>
