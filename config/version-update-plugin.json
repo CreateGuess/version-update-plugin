@@ -1,17 +1,12 @@
 {
-  "server_url": "http://127.0.0.1:28000",
+  "server_url": "http://192.168.2.100:28000",
   "packages": {
     "codeit-deploy": {
-      "install_path": "/home/codeit/Desktop/codeit-deploy_x86_64",
-      "arch": "x86_64",
-      "platform": "generic",
-      "os": "ubuntu-22.04",
-      "channel": "test"
+      "install_path": "/home/codeit/Desktop/codeit-deploy_x86_64"
     },
     "frontend": {
       "install_path": "/home/codeit/Desktop/frontend/robot-platform",
-      "name": "robot-platform",
-      "channel": "test"
+      "name": "robot-platform"
     }
   }
 }

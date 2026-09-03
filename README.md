@@ -58,16 +58,11 @@ vim /home/codeit/Desktop/version-update-plugin.json
   "server_url": "http://192.168.2.100:28000",
   "packages": {
     "codeit-deploy": {
-      "install_path": "/home/codeit/Desktop/codeit-deploy_x86_64",
-      "arch": "x86_64",
-      "platform": "generic",
-      "os": "ubuntu-22.04",
-      "channel": "test"
+      "install_path": "/home/codeit/Desktop/codeit-deploy_x86_64"
     },
     "frontend": {
       "install_path": "/home/codeit/Desktop/frontend/robot-platform",
-      "name": "robot-platform",
-      "channel": "test"
+      "name": "robot-platform"
     }
   }
 }
@@ -81,12 +76,17 @@ export CODEIT_UPDATE_CONFIG=/path/to/version-update-plugin.json
 
 `install_path` 是本机版本安装根目录。插件不会再根据运行用户或 `$HOME` 推测安装
 位置，因此即使 `rpc_gateway` 由 root 启动也不会错误使用 `/root/Desktop`。
-ARM 设备可将配置改为：
+`server_url` 推荐只填写协议、主机和端口，例如 `http://192.168.2.100:28000`。
+为兼容页面中保存的历史配置，末尾带 `/api`、`/api/version` 或 `/api/package` 也会
+自动转换成服务基础地址。
+插件启动时自动读取 `uname`、`/proc/device-tree/compatible`、
+`/proc/device-tree/model` 和 `/etc/os-release`，获得 `arch`、`platform`、`os`。
+这些系统查询维度不会从配置文件或前端接收，避免人为选择错误的软件包。
+
+ARM 设备只需要修改本机安装路径：
 
 ```text
 codeit-deploy.install_path = /home/pi/Desktop/codeit-deploy_aarch64
-codeit-deploy.arch         = aarch64
-codeit-deploy.platform     = rk3588
 frontend.install_path      = /home/pi/Desktop/frontend/robot-platform
 ```
 
@@ -141,7 +141,7 @@ POST /switch       切换到已下载版本
 ```bash
 curl -X POST http://127.0.0.1/backend/plugin-http/version_update/remote \
   -H 'Content-Type: application/json' \
-  -d '{"type":"codeit-deploy","channel":"release","arch":"x86_64"}'
+  -d '{"type":"codeit-deploy","channel":"release"}'
 ```
 
 创建下载任务；`activate=true` 表示校验和解压成功后立即切换：
@@ -149,7 +149,7 @@ curl -X POST http://127.0.0.1/backend/plugin-http/version_update/remote \
 ```bash
 curl -X POST http://127.0.0.1/backend/plugin-http/version_update/download \
   -H 'Content-Type: application/json' \
-  -d '{"type":"frontend","version":"v1.3.50","channel":"release","activate":true}'
+  -d '{"type":"frontend","version":"v2.2.0","channel":"release","activate":true}'
 ```
 
 下载状态通过 WebSocket 主动推送：
@@ -180,6 +180,9 @@ curl 'http://127.0.0.1/backend/plugin-http/version_update/versions?type=codeit-d
 ```
 
 访问云端的请求也可以通过 JSON 中的 `server_url` 临时覆盖云端地址。
+前端只提交 `type`、`channel` 以及具体操作所需的版本号；架构、硬件平台和系统版本
+始终由插件自动识别。`codeit-deploy` 请求携带 `arch/platform/os/channel`，
+`frontend` 请求只携带 `name/channel`，与云端目录规则一致。
 
 ## Web 控制台
 

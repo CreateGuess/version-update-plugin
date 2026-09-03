@@ -7,8 +7,8 @@ const elements = {
   packageType: $("#packageType"),
   packageButtons: [...document.querySelectorAll("[data-package-type]")],
   packageHint: $("#packageHint"),
-  arch: $("#arch"),
   channel: $("#channel"),
+  systemProfile: $("#systemProfile"),
   connection: $("#connectionState"),
   connectionText: $("#connectionText"),
   activeVersion: $("#heroActiveVersion"),
@@ -113,8 +113,7 @@ function loadSettings() {
   elements.apiBase.value = localStorage.getItem("codeit.apiBase") || defaultApiBase();
   elements.serverUrl.value = localStorage.getItem("codeit.serverUrl") || "";
   elements.packageType.value = localStorage.getItem("codeit.packageType") || "codeit-deploy";
-  elements.arch.value = localStorage.getItem("codeit.arch") || "x86_64";
-  elements.channel.value = localStorage.getItem("codeit.channel") || "release";
+  elements.channel.value = localStorage.getItem("codeit.channel") || "test";
   renderPackageContext();
 }
 
@@ -152,7 +151,6 @@ function saveSettings(showMessage = true) {
   localStorage.setItem("codeit.apiBase", apiBase);
   localStorage.setItem("codeit.serverUrl", serverUrl);
   localStorage.setItem("codeit.packageType", elements.packageType.value);
-  localStorage.setItem("codeit.arch", elements.arch.value);
   localStorage.setItem("codeit.channel", elements.channel.value);
   if (showMessage) {
     toast("连接配置已保存");
@@ -183,7 +181,6 @@ async function api(path, options = {}) {
 function requestContext() {
   const context = {
     type: elements.packageType.value,
-    arch: elements.arch.value,
     channel: elements.channel.value,
   };
   const serverUrl = elements.serverUrl.value.trim();
@@ -221,6 +218,8 @@ function renderStatus(status) {
   elements.progressBar.style.width = `${progress}%`;
   elements.progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
   elements.downloadBytes.textContent = `${formatBytes(status.downloaded_bytes)} / ${formatBytes(status.total_bytes)}`;
+  const system = status.system || {};
+  elements.systemProfile.textContent = [system.arch, system.platform, system.os].filter(Boolean).join(" · ") || "等待插件识别";
   elements.cancelButton.disabled = !busyStates.has(status.state);
   renderPhases(status.state);
   document.querySelectorAll(".download-action, .switch-action").forEach((button) => {

@@ -13,6 +13,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__linux__)
+#include <sys/utsname.h>
+#endif
+
 #include <archive.h>
 #include <archive_entry.h>
 #include <openssl/evp.h>
@@ -34,6 +38,26 @@ std::string trim_trailing_slashes(std::string value) {
 }
 
 /**
+ * @brief 将云端地址规范化为不包含固定 API 路径的服务基础地址
+ * @param value 用户或配置文件提供的云端地址
+ * @return 可与 /api/version、/api/package 拼接的基础地址
+ */
+std::string normalize_server_url(std::string value) {
+  // 1. 清除末尾斜杠
+  value = trim_trailing_slashes(std::move(value));
+
+  // 2. 兼容页面历史配置中已经包含固定接口路径的地址
+  for (const std::string suffix : {"/api/version", "/api/package", "/api"}) {
+    if (value.size() >= suffix.size() &&
+        value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      value.erase(value.size() - suffix.size());
+      break;
+    }
+  }
+  return trim_trailing_slashes(std::move(value));
+}
+
+/**
  * @brief 读取文本文件并删除首尾空白字符
  * @param path 文本文件路径
  * @return 文件内容，读取失败时返回空字符串
@@ -47,6 +71,41 @@ std::string read_text_file(const fs::path& path) {
   while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) value.pop_back();
   while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) value.erase(0, 1);
   return value;
+}
+
+/**
+ * @brief 将字符串转换为小写
+ * @param value 待转换字符串
+ * @return 小写字符串
+ */
+std::string lowercase(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+    return static_cast<char>(std::tolower(character));
+  });
+  return value;
+}
+
+/**
+ * @brief 删除 os-release 字段可能包含的单引号或双引号
+ * @param value os-release 字段值
+ * @return 不带外层引号的字段值
+ */
+std::string unquote(std::string value) {
+  if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') ||
+                            (value.front() == '\'' && value.back() == '\''))) {
+    value = value.substr(1, value.size() - 2);
+  }
+  return value;
+}
+
+/**
+ * @brief 检查系统识别值能否安全作为云端目录片段
+ * @param value 待检查的架构、平台或系统标识
+ * @return 与云端服务路径片段规则一致时返回 true
+ */
+bool is_safe_path_component(const std::string& value) {
+  static const std::regex pattern(R"(^[A-Za-z0-9][A-Za-z0-9._-]*$)");
+  return std::regex_match(value, pattern);
 }
 
 /**
@@ -70,7 +129,7 @@ bool VersionUpdatePlugin::on_init(IPluginContext&) noexcept {
   LOGX_GLOBAL_CLASS(PLUGIN_LOG_NAME)::Construct();
   G_LOG()->set(logger());
 
-  // 2. 从桌面配置文件读取云端查询维度和本机安装目录
+  // 2. 从桌面配置文件读取云端地址和本机安装目录
   std::string config_error;
   if (!load_config(config_error)) {
     LOG_ERROR("[{}] Failed to load config: {}", TAG, config_error);
@@ -78,17 +137,26 @@ bool VersionUpdatePlugin::on_init(IPluginContext&) noexcept {
     return false;
   }
 
-  // 3. 初始化 libcurl 全局环境
+  // 3. 从 Linux 系统配置自动识别云端查询维度
+  std::string system_error;
+  if (!detect_system(system_error)) {
+    LOG_ERROR("[{}] Failed to detect system: {}", TAG, system_error);
+    LOGX_GLOBAL_CLASS(PLUGIN_LOG_NAME)::Destruct();
+    return false;
+  }
+
+  // 4. 初始化 libcurl 全局环境
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
     LOG_ERROR("[{}] curl_global_init failed", TAG);
     LOGX_GLOBAL_CLASS(PLUGIN_LOG_NAME)::Destruct();
     return false;
   }
 
-  // 4. 输出配置文件和两类软件包的本机版本目录
-  LOG_INFO("[{}] Initialized; config: {}, codeit-deploy root: {}, frontend root: {}", TAG,
-           config_path_.string(), package_root("codeit-deploy").string(),
-           package_root("frontend").string());
+  // 5. 输出自动识别结果和两类软件包的本机版本目录
+  LOG_INFO(
+      "[{}] Initialized; config: {}, system: {}/{}/{}, codeit-deploy root: {}, frontend root: {}",
+      TAG, config_path_.string(), system_arch_, system_platform_, system_os_,
+      package_root("codeit-deploy").string(), package_root("frontend").string());
   return true;
 }
 
@@ -312,7 +380,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_remote_versions(const json& reque
 
 /**
  * @brief 创建异步下载任务
- * @param request 前端提交的版本、架构、通道和自动切换参数
+ * @param request 前端提交的版本、通道和自动切换参数
  * @return 任务创建结果 HTTP 响应
  */
 PluginHttpResponse VersionUpdatePlugin::handle_download(const json& request) {
@@ -561,9 +629,24 @@ std::optional<VersionUpdatePlugin::PackageInfo> VersionUpdatePlugin::fetch_packa
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     if (result != CURLE_OK) {
-      error = std::string("获取云端版本失败: ") +
-              (error_buffer[0] ? error_buffer : curl_easy_strerror(result));
+      // 云端会用 404 表示查询维度下没有软件包，优先返回其 JSON 错误信息。
+      std::string remote_code;
+      std::string remote_message;
+      try {
+        const json remote_error = json::parse(body);
+        remote_code = remote_error.value("error", "");
+        remote_message = remote_error.value("message", "");
+      } catch (...) {
+      }
+      if (!remote_message.empty()) {
+        error = "云端版本查询失败: " + remote_message;
+        if (!remote_code.empty()) error += " (" + remote_code + ")";
+      } else {
+        error = std::string("获取云端版本失败: ") +
+                (error_buffer[0] ? error_buffer : curl_easy_strerror(result));
+      }
       if (status != 0) error += " (HTTP " + std::to_string(status) + ")";
+      error += "，请求参数: " + query_text + "，请求地址: " + url;
       return std::nullopt;
     }
 
@@ -1111,7 +1194,7 @@ bool VersionUpdatePlugin::load_config(std::string& error) {
 
     // 2. 解析云端地址和软件包配置对象
     const json root = json::parse(input);
-    configured_server_url_ = trim_trailing_slashes(root.value("server_url", ""));
+    configured_server_url_ = normalize_server_url(root.value("server_url", ""));
     if (!valid_server_url(configured_server_url_)) {
       error = "配置文件 server_url 必须是合法的 HTTP/HTTPS 地址";
       return false;
@@ -1122,28 +1205,15 @@ bool VersionUpdatePlugin::load_config(std::string& error) {
       return false;
     }
 
-    // 3. 加载当前插件支持的两个软件包类型
+    // 3. 加载当前插件支持的两个软件包安装目录
     std::map<std::string, PackageConfig> loaded;
     for (const std::string type : {"codeit-deploy", "frontend"}) {
       const json item = packages.value(type, json::object());
       PackageConfig config;
       config.install_path = fs::path(item.value("install_path", ""));
       config.name = item.value("name", "");
-      config.arch = item.value("arch", "");
-      config.platform = item.value("platform", "");
-      config.os = item.value("os", "");
-      config.channel = item.value("channel", "test");
       if (config.install_path.empty() || !config.install_path.is_absolute()) {
         error = type + ".install_path 必须是绝对路径";
-        return false;
-      }
-      if (config.channel != "test" && config.channel != "release") {
-        error = type + ".channel 必须是 test 或 release";
-        return false;
-      }
-      if (type == "codeit-deploy" &&
-          (!valid_arch(config.arch) || config.platform.empty() || config.os.empty())) {
-        error = "codeit-deploy 必须配置 arch、platform 和 os";
         return false;
       }
       if (type == "frontend" && config.name.empty()) {
@@ -1153,6 +1223,85 @@ bool VersionUpdatePlugin::load_config(std::string& error) {
       loaded.emplace(type, std::move(config));
     }
     package_configs_ = std::move(loaded);
+    return true;
+  } catch (const std::exception& exception) {
+    error = exception.what();
+    return false;
+  }
+}
+
+/**
+ * @brief 从当前 Linux 系统自动识别软件包查询维度
+ * @param error 识别失败时写入错误信息
+ * @return 架构、平台和系统版本均可用时返回 true
+ */
+bool VersionUpdatePlugin::detect_system(std::string& error) {
+  try {
+    // 1. 通过 uname 读取运行机器架构
+#if defined(__linux__)
+    struct utsname information {};
+    if (uname(&information) != 0) {
+      error = "uname 读取系统架构失败";
+      return false;
+    }
+    const std::string machine = lowercase(information.machine);
+#elif defined(__aarch64__)
+    const std::string machine = "aarch64";
+#else
+    const std::string machine = "x86_64";
+#endif
+    if (machine == "x86_64" || machine == "amd64")
+      system_arch_ = "x86_64";
+    else if (machine == "aarch64" || machine == "arm64")
+      system_arch_ = "aarch64";
+    else {
+      error = "不支持的系统架构: " + machine;
+      return false;
+    }
+
+    // 2. x86 使用 generic；ARM 从设备树型号识别具体板卡平台
+    if (system_arch_ == "x86_64") {
+      system_platform_ = "generic";
+    } else {
+      const std::string device = lowercase(read_text_file("/proc/device-tree/compatible") + " " +
+                                           read_text_file("/proc/device-tree/model"));
+      if (device.find("rk3588") != std::string::npos)
+        system_platform_ = "rk3588";
+      else if (device.find("tegra234") != std::string::npos ||
+               device.find("orin") != std::string::npos ||
+               device.find("nvidia") != std::string::npos)
+        system_platform_ = "nvidia-orin";
+      else if (device.find("raspberry") != std::string::npos)
+        system_platform_ = "raspberry-pi";
+      else {
+        error = "无法从设备树识别 ARM 硬件平台";
+        return false;
+      }
+    }
+
+    // 3. 从 /etc/os-release 的 ID 和 VERSION_ID 生成服务端目录标识
+    std::ifstream release("/etc/os-release");
+    std::string os_id;
+    std::string os_version;
+    for (std::string line; std::getline(release, line);) {
+      const auto separator = line.find('=');
+      if (separator == std::string::npos) continue;
+      const std::string key = line.substr(0, separator);
+      const std::string value = unquote(line.substr(separator + 1));
+      if (key == "ID") os_id = lowercase(value);
+      if (key == "VERSION_ID") os_version = lowercase(value);
+    }
+    if (os_id.empty() || os_version.empty()) {
+      error = "无法从 /etc/os-release 读取 ID 和 VERSION_ID";
+      return false;
+    }
+    system_os_ = os_id + "-" + os_version;
+    if (!is_safe_path_component(system_arch_) || !is_safe_path_component(system_platform_) ||
+        !is_safe_path_component(system_os_)) {
+      error = "系统识别结果不符合云端安全路径规则: " + system_arch_ + "/" +
+              system_platform_ + "/" + system_os_;
+      return false;
+    }
     return true;
   } catch (const std::exception& exception) {
     error = exception.what();
@@ -1177,15 +1326,17 @@ bool VersionUpdatePlugin::populate_job(const json& request, DownloadJob& job,
       return false;
     }
     const PackageConfig& config = iterator->second;
-    job.server_url = trim_trailing_slashes(request.value("server_url", default_server_url()));
-    job.name = config.name;
-    job.arch = config.arch;
-    job.platform = config.platform;
-    job.os = config.os;
-    job.channel = request.value("channel", config.channel);
+    job.server_url = normalize_server_url(request.value("server_url", default_server_url()));
+    job.channel = request.value("channel", "test");
 
-    // 旧页面仍可选择设备架构；仅 codeit-deploy 使用该覆盖值。
-    if (job.type == "codeit-deploy") job.arch = request.value("arch", config.arch);
+    // 仅按服务端对应软件包类型填充允许的查询字段。
+    if (job.type == "codeit-deploy") {
+      job.arch = system_arch_;
+      job.platform = system_platform_;
+      job.os = system_os_;
+    } else {
+      job.name = config.name;
+    }
     return true;
   } catch (const std::exception& exception) {
     error = exception.what();
@@ -1224,22 +1375,10 @@ fs::path VersionUpdatePlugin::package_root(const std::string& type) const {
 std::string VersionUpdatePlugin::default_server_url() const {
   // 1. 优先读取环境变量配置
   if (const char* configured = std::getenv("CODEIT_UPDATE_SERVER"); configured && configured[0])
-    return trim_trailing_slashes(configured);
+    return normalize_server_url(configured);
 
   // 2. 返回配置文件中的云端服务地址
   return configured_server_url_;
-}
-
-/**
- * @brief 获取当前编译目标的软件包架构
- * @return aarch64 或 x86_64
- */
-std::string VersionUpdatePlugin::native_arch() {
-#if defined(__aarch64__)
-  return "aarch64";
-#else
-  return "x86_64";
-#endif
 }
 
 /**
@@ -1249,15 +1388,6 @@ std::string VersionUpdatePlugin::native_arch() {
  */
 bool VersionUpdatePlugin::valid_type(const std::string& type) {
   return type == "codeit-deploy" || type == "frontend";
-}
-
-/**
- * @brief 检查软件包架构是否合法
- * @param arch 软件包架构
- * @return 支持该架构返回 true
- */
-bool VersionUpdatePlugin::valid_arch(const std::string& arch) {
-  return arch == "x86_64" || arch == "aarch64" || arch == "nvidia-orin";
 }
 
 /**
@@ -1290,7 +1420,7 @@ bool VersionUpdatePlugin::valid_server_url(const std::string& url) {
 std::string VersionUpdatePlugin::build_url(const std::string& server_url,
                                            const std::string& path) {
   if (path.empty() || path.front() != '/') throw std::invalid_argument("非法 URL path");
-  return trim_trailing_slashes(server_url) + path;
+  return normalize_server_url(server_url) + path;
 }
 
 /**
@@ -1419,6 +1549,9 @@ json VersionUpdatePlugin::status_snapshot_json() const {
                       {"deploy_root", package_root(type).string()}};
   }
   result["packages"] = std::move(packages);
+  result["system"] = {{"arch", system_arch_},
+                      {"platform", system_platform_},
+                      {"os", system_os_}};
   return result;
 }
 

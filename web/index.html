@@ -8,7 +8,8 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="noise" aria-hidden="true"></div>
+    <div class="color-orb orb-one" aria-hidden="true"></div>
+    <div class="color-orb orb-two" aria-hidden="true"></div>
     <header class="topbar">
       <a class="brand" href="#" aria-label="Codeit 版本控制台首页">
         <span class="brand-mark">C</span>
@@ -26,9 +27,9 @@
     <main>
       <section class="hero">
         <div>
-          <p class="eyebrow">DEPLOYMENT CONSOLE / 01</p>
-          <h1>版本部署，<br /><em>一目了然。</em></h1>
-          <p class="hero-copy">从云端版本发现、包下载与校验，到本地版本切换，全流程集中控制。</p>
+          <p class="eyebrow">CODEIT UPDATE STATION ✦</p>
+          <h1>版本上新，<br /><em>轻松搞定。</em></h1>
+          <p class="hero-copy">发现新版本、下载、校验、切换，一站完成。设备信息由系统自动识别。</p>
         </div>
         <div class="hero-side">
           <div class="package-switcher">
@@ -70,20 +71,16 @@
             <input id="serverUrl" type="url" placeholder="http://192.168.2.100:28000" spellcheck="false" />
           </label>
           <label class="field">
-            <span>设备架构</span>
-            <select id="arch">
-              <option value="x86_64">x86_64</option>
-              <option value="aarch64">aarch64</option>
-              <option value="nvidia-orin">nvidia-orin</option>
-            </select>
-          </label>
-          <label class="field">
             <span>发布通道</span>
             <select id="channel">
-              <option value="release">release</option>
               <option value="test">test</option>
+              <option value="release">release</option>
             </select>
           </label>
+          <div class="system-profile" aria-live="polite">
+            <span>系统自动识别</span>
+            <strong id="systemProfile">正在读取设备信息…</strong>
+          </div>
         </div>
       </section>
 

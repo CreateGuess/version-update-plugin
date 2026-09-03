@@ -50,10 +50,6 @@ class VersionUpdatePlugin final : public PluginBase {
   struct PackageConfig {
     std::filesystem::path install_path; // 本机版本安装根目录
     std::string name;                   // frontend/backend 组件名
-    std::string arch;                   // 默认架构
-    std::string platform;               // 默认硬件平台
-    std::string os;                     // 默认操作系统版本
-    std::string channel;                // 默认发布通道
   };
 
   /**
@@ -132,20 +128,18 @@ class VersionUpdatePlugin final : public PluginBase {
   std::string active_version(const std::string& type) const;
   // 获取指定软件包类型的本机版本根目录
   std::filesystem::path package_root(const std::string& type) const;
-  // 从 /home/codeit/Desktop 配置文件加载安装路径和查询维度
+  // 从 /home/codeit/Desktop 配置文件加载服务器地址和安装路径
   bool load_config(std::string& error);
+  // 从 Linux 系统信息识别架构、硬件平台和操作系统版本
+  bool detect_system(std::string& error);
   // 根据前端参数和本机配置构建下载任务
   bool populate_job(const nlohmann::json& request, DownloadJob& job, std::string& error) const;
   // 将任务的云端查询维度转换为 JSON
   static nlohmann::json package_query_json(const DownloadJob& job);
   // 获取默认云端版本服务地址
   std::string default_server_url() const;
-  // 获取当前编译目标架构
-  static std::string native_arch();
   // 检查软件包类型是否合法
   static bool valid_type(const std::string& type);
-  // 检查软件包架构是否合法
-  static bool valid_arch(const std::string& arch);
   // 检查版本号是否合法
   static bool valid_version(const std::string& version);
   // 检查云端服务 URL 是否合法
@@ -195,5 +189,8 @@ class VersionUpdatePlugin final : public PluginBase {
   std::filesystem::path config_path_;            // 当前使用的本机配置文件
   std::string configured_server_url_;            // 配置文件中的云端服务地址
   std::map<std::string, PackageConfig> package_configs_; // 各软件包安装与查询配置
+  std::string system_arch_;                       // 系统自动识别的软件包架构
+  std::string system_platform_;                   // 系统自动识别的硬件平台
+  std::string system_os_;                         // 系统自动识别的操作系统版本
   std::atomic<std::int64_t> last_ws_progress_ms_{0}; // 最近一次进度推送时间
 };
