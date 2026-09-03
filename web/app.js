@@ -42,7 +42,8 @@ const stateLabels = {
   completed: "已完成", failed: "失败", canceled: "已取消",
 };
 
-let statusTimer = null;
+let statusSocket = null;
+let reconnectTimer = null;
 let lastState = "";
 let localVersionNames = new Set();
 let remotePackages = [];
@@ -50,6 +51,62 @@ let remotePackages = [];
 function defaultApiBase() {
   const host = window.location.hostname || "127.0.0.1";
   return `http://${host}/backend/plugin-http/version_update`;
+}
+
+function statusWebSocketUrl() {
+  const apiUrl = new URL(elements.apiBase.value.trim());
+  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
+  apiUrl.pathname = apiUrl.pathname.replace(
+    /\/backend\/plugin-http\/version_update\/?$/,
+    "/backend/plugin-ws/version_update",
+  );
+  apiUrl.search = "";
+  apiUrl.hash = "";
+  return apiUrl.toString();
+}
+
+function connectStatusSocket() {
+  window.clearTimeout(reconnectTimer);
+  if (statusSocket) {
+    statusSocket.onclose = null;
+    statusSocket.close();
+  }
+
+  try {
+    const socket = new WebSocket(statusWebSocketUrl());
+    statusSocket = socket;
+    socket.addEventListener("open", () => {
+      setConnection(true);
+      socket.send("snapshot");
+    });
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type !== "status") return;
+        const selected = elements.packageType.value;
+        const packageState = message.packages?.[selected] || {};
+        const status = { ...message, ...packageState, selected_type: selected };
+        renderStatus(status);
+        if (lastState && status.state !== lastState) {
+          logActivity(`${stateLabels[status.state] || status.state}：${status.message || status.target_version || "任务状态已更新"}`);
+          if (["completed", "failed", "canceled"].includes(status.state))
+            refreshLocalVersions(true);
+        }
+        lastState = status.state;
+      } catch (error) {
+        logActivity(`状态推送解析失败：${error.message}`);
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (statusSocket !== socket) return;
+      setConnection(false, "WebSocket 已断开，正在重连");
+      reconnectTimer = window.setTimeout(connectStatusSocket, 2000);
+    });
+    socket.addEventListener("error", () => socket.close());
+  } catch (error) {
+    setConnection(false, error.message);
+    reconnectTimer = window.setTimeout(connectStatusSocket, 2000);
+  }
 }
 
 function loadSettings() {
@@ -101,6 +158,7 @@ function saveSettings(showMessage = true) {
     toast("连接配置已保存");
     logActivity("更新了连接配置");
     refreshAll();
+    connectStatusSocket();
   }
 }
 
@@ -410,5 +468,8 @@ elements.packageButtons.forEach((button) => {
 
 loadSettings();
 refreshAll();
-statusTimer = window.setInterval(() => refreshStatus(true), 1000);
-window.addEventListener("beforeunload", () => window.clearInterval(statusTimer));
+connectStatusSocket();
+window.addEventListener("beforeunload", () => {
+  window.clearTimeout(reconnectTimer);
+  if (statusSocket) statusSocket.close();
+});

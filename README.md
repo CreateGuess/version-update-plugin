@@ -9,6 +9,7 @@
 
 ```text
 version-update-plugin/
+├── config/version-update-plugin.json
 ├── include/version_update_plugin.hpp
 ├── source/version_update_plugin.cpp
 ├── web/                         Web 版本控制台
@@ -43,33 +44,51 @@ SHA-256 校验使用 `OpenSSL::Crypto`，不要求 OpenSSL 3，在 OpenSSL 1.1.x
 
 ## 运行配置
 
+插件默认读取 `/home/codeit/Desktop/version-update-plugin.json`。安装示例配置：
+
 ```bash
-# 云端 version-update-service 的 Nginx 地址
-export CODEIT_UPDATE_SERVER=http://192.168.2.100:28000
-
-# 可选；默认是 $HOME/Desktop/codeit-deploy_<本机架构>
-export CODEIT_DEPLOY_ROOT=/home/codeit/Desktop/codeit-deploy_x86_64
-
-# 可选；默认是 $HOME/Desktop/frontend/robot-platform
-export CODEIT_FRONTEND_ROOT=/home/codeit/Desktop/frontend/robot-platform
+cp config/version-update-plugin.json /home/codeit/Desktop/version-update-plugin.json
+vim /home/codeit/Desktop/version-update-plugin.json
 ```
 
-默认部署目录按设备用户和架构确定：
+配置格式：
+
+```json
+{
+  "server_url": "http://192.168.2.100:28000",
+  "packages": {
+    "codeit-deploy": {
+      "install_path": "/home/codeit/Desktop/codeit-deploy_x86_64",
+      "arch": "x86_64",
+      "platform": "generic",
+      "os": "ubuntu-22.04",
+      "channel": "test"
+    },
+    "frontend": {
+      "install_path": "/home/codeit/Desktop/frontend/robot-platform",
+      "name": "robot-platform",
+      "channel": "test"
+    }
+  }
+}
+```
+
+如需使用其他配置文件，可设置：
+
+```bash
+export CODEIT_UPDATE_CONFIG=/path/to/version-update-plugin.json
+```
+
+`install_path` 是本机版本安装根目录。插件不会再根据运行用户或 `$HOME` 推测安装
+位置，因此即使 `rpc_gateway` 由 root 启动也不会错误使用 `/root/Desktop`。
+ARM 设备可将配置改为：
 
 ```text
-x86_64 机器（用户 codeit）：
-  codeit-deploy -> /home/codeit/Desktop/codeit-deploy_x86_64
-  frontend      -> /home/codeit/Desktop/frontend/robot-platform
-
-ARM 板卡（用户 pi）：
-  codeit-deploy -> /home/pi/Desktop/codeit-deploy_aarch64
-  frontend      -> /home/pi/Desktop/frontend/robot-platform
+codeit-deploy.install_path = /home/pi/Desktop/codeit-deploy_aarch64
+codeit-deploy.arch         = aarch64
+codeit-deploy.platform     = rk3588
+frontend.install_path      = /home/pi/Desktop/frontend/robot-platform
 ```
-
-插件分别优先使用 `CODEIT_DEPLOY_ROOT` 和 `CODEIT_FRONTEND_ROOT`。未配置时，
-非 root 用户使用 `$HOME/Desktop/...`。如果运行环境没有 `HOME`，或者
-`rpc_gateway` 以 root 运行且 `HOME=/root`，则 x86 回退到 `/home/codeit`，
-ARM 回退到 `/home/pi`，不会使用 `/root/Desktop`。
 
 ZIP 在插件进程内通过 `libarchive` 安全解压，不再启动 `unzip` 子进程，因而不受
 Host 的 `SIGCHLD`/子进程回收策略影响。构建环境需要 libarchive、libcurl、
@@ -87,8 +106,7 @@ codeit-deploy_x86_64/
 frontend/robot-platform/
 ├── current_version
 ├── .downloads/
-├── v1.3.46/
-└── v1.3.50/
+└── v2.2.0/
 ```
 
 下载中的文件位于对应软件包根目录的
@@ -101,6 +119,11 @@ frontend/robot-platform/
 普通文件，则写入 `v1.3.50` 这样的版本文本并原子替换。
 
 ## 前端接口
+
+插件已经适配新版云端服务协议：版本清单通过 JSON `POST /api/version` 查询，
+软件包按照清单中的 `download.method`、`download.url` 和 `download.body` 使用
+`POST /api/package` 下载。云端接口定义以
+[`version-update-service`](https://github.com/CreateGuess/version-update-service) 为准。
 
 接口前缀：`/backend/plugin-http/version_update`
 
@@ -129,11 +152,14 @@ curl -X POST http://127.0.0.1/backend/plugin-http/version_update/download \
   -d '{"type":"frontend","version":"v1.3.50","channel":"release","activate":true}'
 ```
 
-前端可轮询进度：
+下载状态通过 WebSocket 主动推送：
 
-```bash
-curl 'http://127.0.0.1/backend/plugin-http/version_update/status?type=frontend'
+```text
+ws://127.0.0.1/backend/plugin-ws/version_update
 ```
+
+建立连接后插件立即发送一次完整快照，任务阶段变化时立即推送，下载过程中最多每
+200ms 推送一次最新进度。`GET /status` 仍保留用于诊断和初始快照。
 
 `state` 依次可能为 `idle`、`queued`、`checking`、`downloading`、
 `verifying`、`extracting`、`activating`、`completed`、`failed`、`canceled`。
@@ -172,6 +198,7 @@ python3 -m http.server 8000
 
 ```text
 http://127.0.0.1/backend/plugin-http/version_update
+ws://127.0.0.1/backend/plugin-ws/version_update
 ```
 
 如果 `rpc_gateway` 使用其他地址或端口，请在页面的“本机插件 API”中修改。

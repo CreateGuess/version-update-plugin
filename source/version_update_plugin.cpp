@@ -70,16 +70,25 @@ bool VersionUpdatePlugin::on_init(IPluginContext&) noexcept {
   LOGX_GLOBAL_CLASS(PLUGIN_LOG_NAME)::Construct();
   G_LOG()->set(logger());
 
-  // 2. 初始化 libcurl 全局环境
+  // 2. 从桌面配置文件读取云端查询维度和本机安装目录
+  std::string config_error;
+  if (!load_config(config_error)) {
+    LOG_ERROR("[{}] Failed to load config: {}", TAG, config_error);
+    LOGX_GLOBAL_CLASS(PLUGIN_LOG_NAME)::Destruct();
+    return false;
+  }
+
+  // 3. 初始化 libcurl 全局环境
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
     LOG_ERROR("[{}] curl_global_init failed", TAG);
     LOGX_GLOBAL_CLASS(PLUGIN_LOG_NAME)::Destruct();
     return false;
   }
 
-  // 3. 输出两类软件包的本机版本目录
-  LOG_INFO("[{}] Initialized; codeit-deploy root: {}, frontend root: {}", TAG,
-           package_root("codeit-deploy").string(), package_root("frontend").string());
+  // 4. 输出配置文件和两类软件包的本机版本目录
+  LOG_INFO("[{}] Initialized; config: {}, codeit-deploy root: {}, frontend root: {}", TAG,
+           config_path_.string(), package_root("codeit-deploy").string(),
+           package_root("frontend").string());
   return true;
 }
 
@@ -116,17 +125,38 @@ bool VersionUpdatePlugin::on_start() noexcept {
     return false;
   }
 
-  // 4. 启动由 Host 管理的下载工作线程
-  cancel_requested_.store(false);
-  if (!start_managed_worker("version-update-download",
-                            [this](PluginStopToken stop) { worker_loop(stop); })) {
-    LOG_ERROR("[{}] Failed to start download worker", TAG);
+  // 4. 注册状态推送 WebSocket 端点
+  PluginWsEndpointOptions ws_options;
+  ws_options.max_receive_message_size = 16 * 1024;
+  ws_options.max_send_message_size = 256 * 1024;
+  ws_options.max_sessions = 32;
+  ws_options.max_send_queue_messages = 16;
+  ws_options.max_send_queue_bytes = 1024 * 1024;
+  if (!register_ws_endpoint(
+          kEndpoint,
+          [this](const char* session_id, const void* data, std::size_t size,
+                 PluginWsMessageType type) { handle_ws_message(session_id, data, size, type); },
+          [this](const char* session_id) { handle_ws_open(session_id); }, {}, ws_options)) {
+    LOG_ERROR("[{}] Failed to register WebSocket endpoint", TAG);
+    unregister_http_endpoint(kEndpoint);
     started_.store(false);
     return false;
   }
 
-  // 5. 插件启动完成
-  LOG_INFO("[{}] Started: /backend/plugin-http/{}/...", TAG, kEndpoint);
+  // 5. 启动由 Host 管理的下载工作线程
+  cancel_requested_.store(false);
+  if (!start_managed_worker("version-update-download",
+                            [this](PluginStopToken stop) { worker_loop(stop); })) {
+    LOG_ERROR("[{}] Failed to start download worker", TAG);
+    unregister_ws_endpoint(kEndpoint);
+    unregister_http_endpoint(kEndpoint);
+    started_.store(false);
+    return false;
+  }
+
+  // 6. 插件启动完成
+  LOG_INFO("[{}] Started: HTTP /backend/plugin-http/{}/..., WS /backend/plugin-ws/{}", TAG,
+           kEndpoint, kEndpoint);
   return true;
 }
 
@@ -201,25 +231,37 @@ PluginHttpResponse VersionUpdatePlugin::handle_status(const PluginHttpRequest& r
   if (!valid_type(selected_type))
     return json_error(400, "invalid_type", "type 必须是 codeit-deploy 或 frontend");
 
-  // 2. 在互斥锁保护下复制任务状态并计算下载百分比
-  json result;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const double progress = total_bytes_ == 0
-                                ? 0.0
-                                : 100.0 * static_cast<double>(downloaded_bytes_) /
-                                      static_cast<double>(total_bytes_);
-    result = {{"state", state_}, {"message", message_}, {"target_type", target_type_},
-              {"target_version", target_version_},
-              {"downloaded_bytes", downloaded_bytes_}, {"total_bytes", total_bytes_},
-              {"progress", std::min(100.0, progress)}};
-  }
+  // 2. 构建与 WebSocket 推送一致的状态快照
+  json result = status_snapshot_json();
 
   // 3. 补充实时读取的当前版本和部署目录
   result["selected_type"] = selected_type;
-  result["active_version"] = active_version(selected_type);
-  result["deploy_root"] = package_root(selected_type).string();
+  result["active_version"] = result["packages"][selected_type]["active_version"];
+  result["deploy_root"] = result["packages"][selected_type]["deploy_root"];
   return json_response(200, {{"code", 0}, {"message", "ok"}, {"data", std::move(result)}});
+}
+
+/**
+ * @brief 处理 WebSocket 客户端消息
+ * @param session_id WebSocket 会话 ID
+ * @param data 客户端消息数据
+ * @param size 客户端消息字节数
+ * @param type 客户端消息类型
+ */
+void VersionUpdatePlugin::handle_ws_message(const char* session_id, const void*, std::size_t,
+                                            PluginWsMessageType type) {
+  // 文本消息视为状态快照请求；二进制消息不处理。
+  if (type != PluginWsMessageType::Text || session_id == nullptr) return;
+  ws_send_latest_text(session_id, "version_update.status", status_snapshot_json().dump());
+}
+
+/**
+ * @brief WebSocket 建立连接时发送完整状态快照
+ * @param session_id WebSocket 会话 ID
+ */
+void VersionUpdatePlugin::handle_ws_open(const char* session_id) {
+  if (session_id == nullptr) return;
+  ws_send_latest_text(session_id, "version_update.status", status_snapshot_json().dump());
 }
 
 /**
@@ -243,25 +285,19 @@ PluginHttpResponse VersionUpdatePlugin::handle_local_versions(const PluginHttpRe
  * @return 云端版本清单 HTTP 响应
  */
 PluginHttpResponse VersionUpdatePlugin::handle_remote_versions(const json& request) {
-  // 1. 读取请求参数，未提供时使用本机默认配置
+  // 1. 根据前端选择和本机配置构建云端查询参数
   DownloadJob job;
-  job.type = request.value("type", "codeit-deploy");
-  job.server_url = trim_trailing_slashes(request.value("server_url", default_server_url()));
-  job.arch = request.value("arch", native_arch());
-  job.channel = request.value("channel", "release");
+  std::string error;
+  if (!populate_job(request, job, error))
+    return json_error(400, "invalid_parameters", error);
 
-  // 2. 校验服务器地址、架构和发布通道
-  if (!valid_type(job.type))
-    return json_error(400, "invalid_type", "type 必须是 codeit-deploy 或 frontend");
+  // 2. 校验服务器地址和发布通道
   if (!valid_server_url(job.server_url))
     return json_error(400, "invalid_server_url", "server_url 必须是合法的 http:// 或 https:// 地址");
-  if (!valid_arch(job.arch))
-    return json_error(400, "invalid_arch", "arch 必须是 x86_64、aarch64 或 nvidia-orin");
   if (job.channel != "test" && job.channel != "release")
     return json_error(400, "invalid_channel", "channel 必须是 test 或 release");
 
   // 3. 从云端读取并缓存版本清单
-  std::string error;
   (void)fetch_package(job, error);
   if (!error.empty()) return json_error(502, "remote_error", error);
 
@@ -280,24 +316,19 @@ PluginHttpResponse VersionUpdatePlugin::handle_remote_versions(const json& reque
  * @return 任务创建结果 HTTP 响应
  */
 PluginHttpResponse VersionUpdatePlugin::handle_download(const json& request) {
-  // 1. 读取下载任务参数
+  // 1. 根据前端选择和本机配置构建下载任务
   DownloadJob job;
-  job.type = request.value("type", "codeit-deploy");
+  std::string error;
+  if (!populate_job(request, job, error))
+    return json_error(400, "invalid_parameters", error);
   job.version = request.value("version", "");
-  job.server_url = trim_trailing_slashes(request.value("server_url", default_server_url()));
-  job.arch = request.value("arch", native_arch());
-  job.channel = request.value("channel", "release");
   job.activate = request.value("activate", false);
 
-  // 2. 校验版本号、服务器地址、架构和发布通道
-  if (!valid_type(job.type))
-    return json_error(400, "invalid_type", "type 必须是 codeit-deploy 或 frontend");
+  // 2. 校验版本号、服务器地址和发布通道
   if (!valid_version(job.version))
     return json_error(400, "invalid_version", "version 格式必须是 v主版本.次版本.修订号");
   if (!valid_server_url(job.server_url))
     return json_error(400, "invalid_server_url", "server_url 必须是合法的 http:// 或 https:// 地址");
-  if (!valid_arch(job.arch))
-    return json_error(400, "invalid_arch", "arch 必须是 x86_64、aarch64 或 nvidia-orin");
   if (job.channel != "test" && job.channel != "release")
     return json_error(400, "invalid_channel", "channel 必须是 test 或 release");
 
@@ -323,6 +354,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_download(const json& request) {
   }
 
   // 5. 唤醒工作线程并立即向前端返回 202
+  broadcast_status(true);
   job_cv_.notify_one();
   return json_response(202, {{"code", 0}, {"message", "下载任务已创建"},
                              {"data", {{"type", job.type}, {"version", job.version},
@@ -344,6 +376,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_cancel() {
   }
 
   // 2. 唤醒工作线程，使排队任务及时观察取消标记
+  broadcast_status(true);
   job_cv_.notify_all();
   return json_response(202, {{"code", 0}, {"message", "取消请求已提交"}});
 }
@@ -373,6 +406,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_switch(const json& request) {
   // 3. 原子更新 current_version
   std::string error;
   if (!activate_version(type, version, error)) return json_error(409, "switch_failed", error);
+  broadcast_status(true);
   return json_response(200, {{"code", 0}, {"message", "版本切换成功"},
                              {"data", {{"type", type}, {"active_version", version}}}});
 }
@@ -493,15 +527,21 @@ std::optional<VersionUpdatePlugin::PackageInfo> VersionUpdatePlugin::fetch_packa
       return std::nullopt;
     }
 
-    // 2. 构建版本清单 URL 和响应缓冲区
-    const std::string url =
-        build_url(job.server_url,
-                  "/api/version/" + job.type + "/" + job.arch + "/" + job.channel);
+    // 2. 构建新版 POST /api/version 请求和响应缓冲区
+    const std::string url = build_url(job.server_url, "/api/version");
+    const std::string query_text = package_query_json(job).dump();
     std::string body;
     char error_buffer[CURL_ERROR_SIZE]{};
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    // 3. 配置重定向、超时、线程安全和 TLS 校验
+    // 3. 配置 JSON POST、重定向、超时、线程安全和 TLS 校验
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, query_text.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+                     static_cast<curl_off_t>(query_text.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -518,6 +558,7 @@ std::optional<VersionUpdatePlugin::PackageInfo> VersionUpdatePlugin::fetch_packa
     const CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     if (result != CURLE_OK) {
       error = std::string("获取云端版本失败: ") +
@@ -545,9 +586,14 @@ std::optional<VersionUpdatePlugin::PackageInfo> VersionUpdatePlugin::fetch_packa
     // 8. 查找目标版本并校验必要字段
     for (const auto& item : manifest["packages"]) {
       if (item.value("version", "") != job.version) continue;
-      PackageInfo package{job.version, item.value("url", ""), item.value("sha256", ""),
+      const json download = item.value("download", json::object());
+      const std::string download_method = download.value("method", "");
+      PackageInfo package{job.version, download.value("url", ""),
+                          download.value("body", json::object()), item.value("sha256", ""),
                           item.value("size", std::uint64_t{0})};
-      if (package.url.empty() || package.url.front() != '/' || package.sha256.size() != 64) {
+      if (download_method != "POST" || package.download_url.empty() ||
+          package.download_url.front() != '/' ||
+          !package.download_body.is_object() || package.sha256.size() != 64) {
         error = "版本服务器返回的软件包信息不完整";
         return std::nullopt;
       }
@@ -577,7 +623,8 @@ bool VersionUpdatePlugin::download_package(const DownloadJob& job, const Package
                                            std::string& error) {
   // 1. 准备下载地址和断点文件名
   const std::string temporary_file_name = temporary_file.string();
-  const std::string url = build_url(job.server_url, package.url);
+  const std::string url = build_url(job.server_url, package.download_url);
+  const std::string download_text = package.download_body.dump();
   constexpr int maximum_attempts = 6;
 
   // 2. 网络中断时在同一任务内自动重试，并从临时文件末尾续传
@@ -624,9 +671,16 @@ bool VersionUpdatePlugin::download_package(const DownloadJob& job, const Package
     }
     CurlDownloadContext context{this, file, stop, offset};
     char error_buffer[CURL_ERROR_SIZE]{};
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    // 5. 配置 HTTP Range、连接保活、流式写入、进度回调和取消处理
+    // 5. 配置新版 POST /api/package、HTTP Range、连接保活和进度回调
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, download_text.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+                     static_cast<curl_off_t>(download_text.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -653,6 +707,7 @@ bool VersionUpdatePlugin::download_package(const DownloadJob& job, const Package
     const CURLcode result = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     const bool close_ok = std::fclose(file) == 0;
     if (canceled(stop)) return false;
@@ -1037,42 +1092,142 @@ std::string VersionUpdatePlugin::active_version(const std::string& type) const {
 }
 
 /**
+ * @brief 从桌面 JSON 文件加载插件配置
+ * @param error 加载失败时写入错误信息
+ * @return 配置完整且合法返回 true
+ */
+bool VersionUpdatePlugin::load_config(std::string& error) {
+  try {
+    // 1. 默认读取 /home/codeit/Desktop/version-update-plugin.json
+    const char* configured_path = std::getenv("CODEIT_UPDATE_CONFIG");
+    config_path_ = configured_path && configured_path[0]
+                       ? fs::path(configured_path)
+                       : fs::path("/home/codeit/Desktop/version-update-plugin.json");
+    std::ifstream input(config_path_, std::ios::binary);
+    if (!input) {
+      error = "无法读取配置文件: " + config_path_.string();
+      return false;
+    }
+
+    // 2. 解析云端地址和软件包配置对象
+    const json root = json::parse(input);
+    configured_server_url_ = trim_trailing_slashes(root.value("server_url", ""));
+    if (!valid_server_url(configured_server_url_)) {
+      error = "配置文件 server_url 必须是合法的 HTTP/HTTPS 地址";
+      return false;
+    }
+    const json packages = root.value("packages", json::object());
+    if (!packages.is_object()) {
+      error = "配置文件 packages 必须是 JSON 对象";
+      return false;
+    }
+
+    // 3. 加载当前插件支持的两个软件包类型
+    std::map<std::string, PackageConfig> loaded;
+    for (const std::string type : {"codeit-deploy", "frontend"}) {
+      const json item = packages.value(type, json::object());
+      PackageConfig config;
+      config.install_path = fs::path(item.value("install_path", ""));
+      config.name = item.value("name", "");
+      config.arch = item.value("arch", "");
+      config.platform = item.value("platform", "");
+      config.os = item.value("os", "");
+      config.channel = item.value("channel", "test");
+      if (config.install_path.empty() || !config.install_path.is_absolute()) {
+        error = type + ".install_path 必须是绝对路径";
+        return false;
+      }
+      if (config.channel != "test" && config.channel != "release") {
+        error = type + ".channel 必须是 test 或 release";
+        return false;
+      }
+      if (type == "codeit-deploy" &&
+          (!valid_arch(config.arch) || config.platform.empty() || config.os.empty())) {
+        error = "codeit-deploy 必须配置 arch、platform 和 os";
+        return false;
+      }
+      if (type == "frontend" && config.name.empty()) {
+        error = "frontend 必须配置 name";
+        return false;
+      }
+      loaded.emplace(type, std::move(config));
+    }
+    package_configs_ = std::move(loaded);
+    return true;
+  } catch (const std::exception& exception) {
+    error = exception.what();
+    return false;
+  }
+}
+
+/**
+ * @brief 根据前端参数和本机配置构建下载任务
+ * @param request 前端 JSON 参数
+ * @param job 输出的任务参数
+ * @param error 参数错误信息
+ * @return 参数完整返回 true
+ */
+bool VersionUpdatePlugin::populate_job(const json& request, DownloadJob& job,
+                                       std::string& error) const {
+  try {
+    job.type = request.value("type", "codeit-deploy");
+    const auto iterator = package_configs_.find(job.type);
+    if (iterator == package_configs_.end()) {
+      error = "type 必须是 codeit-deploy 或 frontend";
+      return false;
+    }
+    const PackageConfig& config = iterator->second;
+    job.server_url = trim_trailing_slashes(request.value("server_url", default_server_url()));
+    job.name = config.name;
+    job.arch = config.arch;
+    job.platform = config.platform;
+    job.os = config.os;
+    job.channel = request.value("channel", config.channel);
+
+    // 旧页面仍可选择设备架构；仅 codeit-deploy 使用该覆盖值。
+    if (job.type == "codeit-deploy") job.arch = request.value("arch", config.arch);
+    return true;
+  } catch (const std::exception& exception) {
+    error = exception.what();
+    return false;
+  }
+}
+
+/**
+ * @brief 将任务转换为新版云端接口需要的查询 JSON
+ * @param job 下载任务
+ * @return POST /api/version 使用的请求体
+ */
+json VersionUpdatePlugin::package_query_json(const DownloadJob& job) {
+  json result = {{"type", job.type}, {"channel", job.channel}};
+  if (!job.name.empty()) result["name"] = job.name;
+  if (!job.arch.empty()) result["arch"] = job.arch;
+  if (!job.platform.empty()) result["platform"] = job.platform;
+  if (!job.os.empty()) result["os"] = job.os;
+  return result;
+}
+
+/**
  * @brief 获取指定软件包类型的本机版本根目录
  * @param type 软件包类型
- * @return 环境变量配置或根据用户和架构生成的默认目录
+ * @return 配置文件声明的安装目录
  */
 fs::path VersionUpdatePlugin::package_root(const std::string& type) const {
-  // 1. 优先使用不同软件包类型对应的环境变量
-  const char* variable = type == "frontend" ? "CODEIT_FRONTEND_ROOT" : "CODEIT_DEPLOY_ROOT";
-  if (const char* configured = std::getenv(variable); configured && configured[0])
-    return fs::path(configured);
-
-  // 2. 确定实际部署用户目录。rpc_gateway 经常以 root 运行，不能使用 /root。
-  fs::path user_home;
-  if (const char* home = std::getenv("HOME"); home && home[0]) {
-    const fs::path home_path(home);
-    if (home_path != fs::path("/root")) user_home = home_path;
-  }
-  if (user_home.empty())
-    user_home = native_arch() == "x86_64" ? fs::path("/home/codeit") : fs::path("/home/pi");
-
-  // 3. frontend 使用 robot-platform 项目目录，codeit-deploy 目录包含本机架构后缀
-  if (type == "frontend")
-    return user_home / "Desktop" / "frontend" / "robot-platform";
-  return user_home / "Desktop" / ("codeit-deploy_" + native_arch());
+  const auto iterator = package_configs_.find(type);
+  return iterator == package_configs_.end() ? fs::path{} : iterator->second.install_path;
 }
 
 /**
  * @brief 获取默认云端版本服务地址
- * @return CODEIT_UPDATE_SERVER 或本机 28000 端口地址
+ * @return CODEIT_UPDATE_SERVER 或配置文件中的地址
  */
 std::string VersionUpdatePlugin::default_server_url() const {
   // 1. 优先读取环境变量配置
   if (const char* configured = std::getenv("CODEIT_UPDATE_SERVER"); configured && configured[0])
     return trim_trailing_slashes(configured);
 
-  // 2. 返回本机 Nginx 的默认地址
-  return "http://127.0.0.1:28000";
+  // 2. 返回配置文件中的云端服务地址
+  return configured_server_url_;
 }
 
 /**
@@ -1179,11 +1334,14 @@ int VersionUpdatePlugin::curl_progress(void* user_data, curl_off_t total, curl_o
                                        curl_off_t, curl_off_t) {
   auto* context = static_cast<CurlDownloadContext*>(user_data);
   if (context->plugin->canceled(context->stop)) return 1;
-  std::lock_guard<std::mutex> lock(context->plugin->mutex_);
-  context->plugin->downloaded_bytes_ =
-      context->resume_offset + (now > 0 ? static_cast<std::uint64_t>(now) : 0);
-  if (total > 0)
-    context->plugin->total_bytes_ = context->resume_offset + static_cast<std::uint64_t>(total);
+  {
+    std::lock_guard<std::mutex> lock(context->plugin->mutex_);
+    context->plugin->downloaded_bytes_ =
+        context->resume_offset + (now > 0 ? static_cast<std::uint64_t>(now) : 0);
+    if (total > 0)
+      context->plugin->total_bytes_ = context->resume_offset + static_cast<std::uint64_t>(total);
+  }
+  context->plugin->broadcast_status(false);
   return 0;
 }
 
@@ -1233,15 +1391,72 @@ PluginHttpResponse VersionUpdatePlugin::json_error(int status, const std::string
 }
 
 /**
+ * @brief 构建当前任务和所有本机软件包的状态快照
+ * @return WebSocket 与 HTTP 共用的状态 JSON
+ */
+json VersionUpdatePlugin::status_snapshot_json() const {
+  json result;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const double progress = total_bytes_ == 0
+                                ? 0.0
+                                : 100.0 * static_cast<double>(downloaded_bytes_) /
+                                      static_cast<double>(total_bytes_);
+    result = {{"type", "status"},
+              {"state", state_},
+              {"message", message_},
+              {"target_type", target_type_},
+              {"target_version", target_version_},
+              {"downloaded_bytes", downloaded_bytes_},
+              {"total_bytes", total_bytes_},
+              {"progress", std::min(100.0, progress)}};
+  }
+
+  // 当前版本读取不持有任务互斥锁，避免文件系统访问阻塞下载进度更新。
+  json packages = json::object();
+  for (const std::string type : {"codeit-deploy", "frontend"}) {
+    packages[type] = {{"active_version", active_version(type)},
+                      {"deploy_root", package_root(type).string()}};
+  }
+  result["packages"] = std::move(packages);
+  return result;
+}
+
+/**
+ * @brief 向所有 WebSocket 客户端推送最新状态
+ * @param force true 表示忽略进度推送节流
+ */
+void VersionUpdatePlugin::broadcast_status(bool force) noexcept {
+  try {
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    if (!force) {
+      const auto previous = last_ws_progress_ms_.load(std::memory_order_relaxed);
+      if (now - previous < 200) return;
+      last_ws_progress_ms_.store(now, std::memory_order_relaxed);
+    }
+    ws_broadcast_latest_text(kEndpoint, "version_update.status", status_snapshot_json().dump());
+  } catch (const std::exception& exception) {
+    LOG_WARN("[{}] Failed to broadcast WebSocket status: {}", TAG, exception.what());
+  } catch (...) {
+    LOG_WARN("[{}] Failed to broadcast WebSocket status", TAG);
+  }
+}
+
+/**
  * @brief 更新当前任务状态
  * @param state 新的任务阶段
  * @param message 新的任务提示或错误信息
  */
 void VersionUpdatePlugin::set_state(const std::string& state, const std::string& message) {
   // 使用同一互斥锁保证状态和提示信息同时更新
-  std::lock_guard<std::mutex> lock(mutex_);
-  state_ = state;
-  message_ = message;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_ = state;
+    message_ = message;
+  }
+  broadcast_status(true);
 }
 
 /**

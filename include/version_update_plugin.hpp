@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -12,6 +13,7 @@
 #include <curl/curl.h>
 
 #include "nlohmann/json.hpp"
+#include "plugin_core/api/plugin_websocket_api.hpp"
 #include "plugin_core/sdk/plugin_logx.hpp"
 #include "plugin_core/sdk/plugin_sdk.hpp"
 
@@ -35,8 +37,23 @@ class VersionUpdatePlugin final : public PluginBase {
     std::string version;     // 目标版本，如 v1.3.50
     std::string server_url;  // 云端版本服务地址
     std::string arch;        // 软件包架构
+    std::string name;        // backend/frontend 的组件名
+    std::string platform;    // 硬件平台
+    std::string os;          // 操作系统版本
     std::string channel;     // 发布通道
     bool activate{false};    // 下载完成后是否立即切换
+  };
+
+  /**
+   * @brief 从本机配置文件读取的软件包配置
+   */
+  struct PackageConfig {
+    std::filesystem::path install_path; // 本机版本安装根目录
+    std::string name;                   // frontend/backend 组件名
+    std::string arch;                   // 默认架构
+    std::string platform;               // 默认硬件平台
+    std::string os;                     // 默认操作系统版本
+    std::string channel;                // 默认发布通道
   };
 
   /**
@@ -53,10 +70,11 @@ class VersionUpdatePlugin final : public PluginBase {
    * @brief 从云端版本清单解析出的软件包信息
    */
   struct PackageInfo {
-    std::string version;   // 软件包版本
-    std::string url;       // 相对于版本服务器的下载路径
-    std::string sha256;    // 软件包 SHA-256
-    std::uint64_t size{0}; // 软件包字节数
+    std::string version;       // 软件包版本
+    std::string download_url;  // 相对于版本服务器的下载接口
+    nlohmann::json download_body; // 下载接口要求的 JSON 请求体
+    std::string sha256;        // 软件包 SHA-256
+    std::uint64_t size{0};     // 软件包字节数
   };
 
   // 初始化插件日志
@@ -82,6 +100,11 @@ class VersionUpdatePlugin final : public PluginBase {
   PluginHttpResponse handle_cancel();
   // 切换到指定本地版本
   PluginHttpResponse handle_switch(const nlohmann::json& request);
+  // 处理 WebSocket 客户端消息
+  void handle_ws_message(const char* session_id, const void* data, std::size_t size,
+                         PluginWsMessageType type);
+  // WebSocket 建立连接时发送完整状态快照
+  void handle_ws_open(const char* session_id);
 
   // Host 托管的下载任务循环
   void worker_loop(PluginStopToken stop);
@@ -109,6 +132,12 @@ class VersionUpdatePlugin final : public PluginBase {
   std::string active_version(const std::string& type) const;
   // 获取指定软件包类型的本机版本根目录
   std::filesystem::path package_root(const std::string& type) const;
+  // 从 /home/codeit/Desktop 配置文件加载安装路径和查询维度
+  bool load_config(std::string& error);
+  // 根据前端参数和本机配置构建下载任务
+  bool populate_job(const nlohmann::json& request, DownloadJob& job, std::string& error) const;
+  // 将任务的云端查询维度转换为 JSON
+  static nlohmann::json package_query_json(const DownloadJob& job);
   // 获取默认云端版本服务地址
   std::string default_server_url() const;
   // 获取当前编译目标架构
@@ -139,6 +168,10 @@ class VersionUpdatePlugin final : public PluginBase {
   // 构建统一的 JSON 错误响应
   static PluginHttpResponse json_error(int status, const std::string& code,
                                        const std::string& message);
+  // 构建可通过 HTTP 或 WebSocket 返回的状态快照
+  nlohmann::json status_snapshot_json() const;
+  // 向所有 WebSocket 客户端推送最新状态
+  void broadcast_status(bool force = true) noexcept;
 
   // 更新当前任务状态和提示信息
   void set_state(const std::string& state, const std::string& message = {});
@@ -159,4 +192,8 @@ class VersionUpdatePlugin final : public PluginBase {
   std::uint64_t downloaded_bytes_{0};           // 已下载字节数
   std::uint64_t total_bytes_{0};                // 软件包总字节数
   nlohmann::json remote_manifest_;              // 最近一次查询到的云端版本清单
+  std::filesystem::path config_path_;            // 当前使用的本机配置文件
+  std::string configured_server_url_;            // 配置文件中的云端服务地址
+  std::map<std::string, PackageConfig> package_configs_; // 各软件包安装与查询配置
+  std::atomic<std::int64_t> last_ws_progress_ms_{0}; // 最近一次进度推送时间
 };
