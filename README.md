@@ -58,15 +58,35 @@ vim /home/codeit/Desktop/version-update-plugin.json
   "server_url": "http://192.168.2.100:28000",
   "packages": {
     "codeit-deploy": {
+      "type": "codeit-deploy",
+      "label": "CODEIT",
       "install_path": "/home/codeit/Desktop/codeit-deploy_x86_64"
     },
     "frontend": {
+      "type": "frontend",
+      "label": "FRONTEND",
       "install_path": "/home/codeit/Desktop/frontend/robot-platform",
       "name": "robot-platform"
     }
   }
 }
 ```
+
+`packages` 是动态软件包表，不限制为上面的两项。对象键是本机唯一的包 ID；新增组件
+只需增加配置，不需要修改或重新编译插件。例如增加 `rpc_gateway`：
+
+```json
+"rpc-gateway": {
+  "type": "backend",
+  "name": "rpc_gateway",
+  "label": "RPC GATEWAY",
+  "install_path": "/home/codeit/Desktop/backend/rpc_gateway"
+}
+```
+
+`type` 支持 `codeit-deploy`、`codeit-lib`、`backend`、`frontend`。其中
+`backend`、`frontend` 必须配置 `name`；`codeit-deploy`、`codeit-lib` 不能配置
+`name`。`label` 只用于前端显示。前端通过 `GET /packages` 动态生成软件包选择器。
 
 如需使用其他配置文件，可设置：
 
@@ -129,6 +149,7 @@ frontend/robot-platform/
 
 ```text
 GET  /status       当前任务状态与指定类型的当前版本
+GET  /packages     配置文件声明的全部软件包
 GET  /versions     指定类型的本地版本列表及当前版本
 POST /remote       查询云端最近两个版本
 POST /download     创建异步下载任务
@@ -141,7 +162,7 @@ POST /switch       切换到已下载版本
 ```bash
 curl -X POST http://127.0.0.1/backend/plugin-http/version_update/remote \
   -H 'Content-Type: application/json' \
-  -d '{"type":"codeit-deploy","channel":"release"}'
+  -d '{"package":"codeit-deploy","channel":"release"}'
 ```
 
 创建下载任务；`activate=true` 表示校验和解压成功后立即切换：
@@ -149,7 +170,7 @@ curl -X POST http://127.0.0.1/backend/plugin-http/version_update/remote \
 ```bash
 curl -X POST http://127.0.0.1/backend/plugin-http/version_update/download \
   -H 'Content-Type: application/json' \
-  -d '{"type":"frontend","version":"v2.2.0","channel":"release","activate":true}'
+  -d '{"package":"frontend","version":"v2.2.0","channel":"release","activate":true}'
 ```
 
 下载状态通过 WebSocket 主动推送：
@@ -169,14 +190,14 @@ ws://127.0.0.1/backend/plugin-ws/version_update
 ```bash
 curl -X POST http://127.0.0.1/backend/plugin-http/version_update/switch \
   -H 'Content-Type: application/json' \
-  -d '{"type":"codeit-deploy","version":"v1.3.46"}'
+  -d '{"package":"codeit-deploy","version":"v1.3.46"}'
 ```
 
-`POST /remote`、`POST /download` 和 `POST /switch` 的 `type` 可取
-`codeit-deploy` 或 `frontend`，缺省为 `codeit-deploy`。查询本地版本时使用：
+`POST /remote`、`POST /download` 和 `POST /switch` 使用配置对象键作为 `package`。
+旧版请求中的 `type` 参数仍兼容。查询本地版本时使用：
 
 ```bash
-curl 'http://127.0.0.1/backend/plugin-http/version_update/versions?type=codeit-deploy'
+curl 'http://127.0.0.1/backend/plugin-http/version_update/versions?package=codeit-deploy'
 ```
 
 访问云端的请求也可以通过 JSON 中的 `server_url` 临时覆盖云端地址。

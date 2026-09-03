@@ -2,9 +2,13 @@
   "server_url": "http://192.168.2.100:28000",
   "packages": {
     "codeit-deploy": {
+      "type": "codeit-deploy",
+      "label": "CODEIT",
       "install_path": "/home/codeit/Desktop/codeit-deploy_x86_64"
     },
     "frontend": {
+      "type": "frontend",
+      "label": "FRONTEND",
       "install_path": "/home/codeit/Desktop/frontend/robot-platform",
       "name": "robot-platform"
     }

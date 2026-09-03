@@ -5,7 +5,7 @@ const elements = {
   apiBase: $("#apiBase"),
   serverUrl: $("#serverUrl"),
   packageType: $("#packageType"),
-  packageButtons: [...document.querySelectorAll("[data-package-type]")],
+  packageOptions: $(".package-options"),
   packageHint: $("#packageHint"),
   channel: $("#channel"),
   systemProfile: $("#systemProfile"),
@@ -47,6 +47,7 @@ let reconnectTimer = null;
 let lastState = "";
 let localVersionNames = new Set();
 let remotePackages = [];
+let packageCatalog = [];
 
 function defaultApiBase() {
   const host = window.location.hostname || "127.0.0.1";
@@ -118,22 +119,50 @@ function loadSettings() {
 }
 
 function renderPackageContext() {
-  const frontend = elements.packageType.value === "frontend";
+  const selected = packageCatalog.find((item) => item.id === elements.packageType.value);
+  const frontend = selected?.type === "frontend";
+  const label = selected?.label || elements.packageType.value;
   document.body.dataset.packageType = frontend ? "frontend" : "codeit-deploy";
-  elements.packageHint.textContent = frontend
-    ? "管理 robot-platform，下载到 frontend/robot-platform 版本目录"
-    : "管理主程序版本与设备部署目录";
-  elements.remoteTitle.textContent = frontend ? "Frontend 可用版本" : "Codeit 可用版本";
-  elements.localTitle.textContent = frontend ? "Frontend 已下载版本" : "Codeit 已下载版本";
-  elements.packageButtons.forEach((button) => {
+  elements.packageHint.textContent = selected
+    ? `${selected.type}${selected.name ? ` / ${selected.name}` : ""} · ${selected.install_path}`
+    : "等待读取软件包配置";
+  elements.remoteTitle.textContent = `${label} 可用版本`;
+  elements.localTitle.textContent = `${label} 已下载版本`;
+  elements.packageOptions.querySelectorAll("[data-package-type]").forEach((button) => {
     const active = button.dataset.packageType === elements.packageType.value;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
 }
 
+function renderPackageSelector() {
+  elements.packageOptions.replaceChildren();
+  packageCatalog.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.packageType = item.id;
+    const title = document.createElement("strong");
+    title.textContent = item.label || item.id;
+    const detail = document.createElement("small");
+    detail.textContent = item.name || item.type;
+    button.append(title, detail);
+    button.addEventListener("click", () => selectPackageType(item.id));
+    elements.packageOptions.append(button);
+  });
+  renderPackageContext();
+}
+
+async function refreshPackageCatalog() {
+  packageCatalog = await api("/packages");
+  if (!Array.isArray(packageCatalog) || !packageCatalog.length)
+    throw new Error("插件配置中没有可管理的软件包");
+  if (!packageCatalog.some((item) => item.id === elements.packageType.value))
+    elements.packageType.value = packageCatalog[0].id;
+  renderPackageSelector();
+}
+
 function selectPackageType(type) {
-  if (type !== "codeit-deploy" && type !== "frontend") return;
+  if (!packageCatalog.some((item) => item.id === type)) return;
   elements.packageType.value = type;
   renderPackageContext();
   saveSettings(false);
@@ -155,8 +184,13 @@ function saveSettings(showMessage = true) {
   if (showMessage) {
     toast("连接配置已保存");
     logActivity("更新了连接配置");
-    refreshAll();
-    connectStatusSocket();
+    refreshPackageCatalog()
+      .then(() => refreshAll())
+      .then(() => connectStatusSocket())
+      .catch((error) => {
+        setConnection(false, error.message);
+        toast(error.message, true);
+      });
   }
 }
 
@@ -180,7 +214,7 @@ async function api(path, options = {}) {
 
 function requestContext() {
   const context = {
-    type: elements.packageType.value,
+    package: elements.packageType.value,
     channel: elements.channel.value,
   };
   const serverUrl = elements.serverUrl.value.trim();
@@ -190,7 +224,7 @@ function requestContext() {
 
 async function refreshStatus(silent = false) {
   try {
-    const status = await api(`/status?type=${encodeURIComponent(elements.packageType.value)}`);
+    const status = await api(`/status?package=${encodeURIComponent(elements.packageType.value)}`);
     setConnection(true);
     renderStatus(status);
     if (lastState && status.state !== lastState) {
@@ -316,7 +350,7 @@ async function cancelDownload() {
 async function refreshLocalVersions(silent = false) {
   elements.refreshLocalButton.disabled = true;
   try {
-    const data = await api(`/versions?type=${encodeURIComponent(elements.packageType.value)}`);
+    const data = await api(`/versions?package=${encodeURIComponent(elements.packageType.value)}`);
     setConnection(true);
     renderLocalVersions(data.versions || [], data.active_version || "");
   } catch (error) {
@@ -365,7 +399,7 @@ async function switchVersion(version) {
   const type = elements.packageType.value;
   if (!window.confirm(`确定将 ${type} 切换到 ${version}？`)) return;
   try {
-    await api("/switch", { method: "POST", body: { type, version } });
+    await api("/switch", { method: "POST", body: { package: type, version } });
     toast(`${type} 已切换到 ${version}`);
     logActivity(`${type} 当前版本切换为 ${version}`);
     await Promise.all([refreshStatus(true), refreshLocalVersions(true)]);
@@ -461,13 +495,20 @@ elements.refreshRemoteButton.addEventListener("click", refreshRemoteVersions);
 elements.refreshLocalButton.addEventListener("click", () => refreshLocalVersions(false));
 elements.cancelButton.addEventListener("click", cancelDownload);
 elements.clearLogButton.addEventListener("click", () => elements.activityLog.replaceChildren());
-elements.packageButtons.forEach((button) => {
-  button.addEventListener("click", () => selectPackageType(button.dataset.packageType));
-});
+async function startConsole() {
+  loadSettings();
+  try {
+    await refreshPackageCatalog();
+    await refreshAll();
+    connectStatusSocket();
+  } catch (error) {
+    setConnection(false, error.message);
+    toast(error.message, true);
+    logActivity(`初始化失败：${error.message}`);
+  }
+}
 
-loadSettings();
-refreshAll();
-connectStatusSocket();
+startConsole();
 window.addEventListener("beforeunload", () => {
   window.clearTimeout(reconnectTimer);
   if (statusSocket) statusSocket.close();

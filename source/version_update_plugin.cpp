@@ -152,11 +152,10 @@ bool VersionUpdatePlugin::on_init(IPluginContext&) noexcept {
     return false;
   }
 
-  // 5. 输出自动识别结果和两类软件包的本机版本目录
-  LOG_INFO(
-      "[{}] Initialized; config: {}, system: {}/{}/{}, codeit-deploy root: {}, frontend root: {}",
-      TAG, config_path_.string(), system_arch_, system_platform_, system_os_,
-      package_root("codeit-deploy").string(), package_root("frontend").string());
+  // 5. 输出自动识别结果和动态加载的软件包数量
+  LOG_INFO("[{}] Initialized; config: {}, system: {}/{}/{}, packages: {}", TAG,
+           config_path_.string(), system_arch_, system_platform_, system_os_,
+           package_configs_.size());
   return true;
 }
 
@@ -173,7 +172,8 @@ bool VersionUpdatePlugin::on_start() noexcept {
   PluginHttpEndpointOptions options;
   options.methods = {"GET", "POST"};
   options.routes = {
-      PluginHttpRoute{"/status", {"GET"}}, PluginHttpRoute{"/versions", {"GET"}},
+      PluginHttpRoute{"/status", {"GET"}}, PluginHttpRoute{"/packages", {"GET"}},
+      PluginHttpRoute{"/versions", {"GET"}},
       PluginHttpRoute{"/remote", {"POST"}}, PluginHttpRoute{"/download", {"POST"}},
       PluginHttpRoute{"/cancel", {"POST"}}, PluginHttpRoute{"/switch", {"POST"}},
   };
@@ -265,6 +265,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_http(const PluginHttpRequest& req
 
     // 2. 处理不需要请求体的查询接口
     if (request.route_pattern == "/status") return handle_status(request);
+    if (request.route_pattern == "/packages") return handle_packages();
     if (request.route_pattern == "/versions") return handle_local_versions(request);
 
     // 3. 解析 JSON 请求体并分发写操作接口
@@ -293,20 +294,30 @@ PluginHttpResponse VersionUpdatePlugin::handle_http(const PluginHttpRequest& req
  * @return 包含任务阶段、进度和当前版本的 HTTP 响应
  */
 PluginHttpResponse VersionUpdatePlugin::handle_status(const PluginHttpRequest& request) {
-  // 1. 读取前端当前选择的软件包类型
-  std::string selected_type(request.param("type"));
-  if (selected_type.empty()) selected_type = "codeit-deploy";
-  if (!valid_type(selected_type))
-    return json_error(400, "invalid_type", "type 必须是 codeit-deploy 或 frontend");
+  // 1. 读取前端当前选择的软件包 ID，并兼容旧 type 参数
+  std::string selected = resolve_package_id(std::string(request.param("package")));
+  if (selected.empty()) selected = resolve_package_id(std::string(request.param("type")));
+  if (selected.empty()) selected = resolve_package_id(std::string{});
+  if (selected.empty()) return json_error(400, "invalid_package", "软件包不存在");
 
   // 2. 构建与 WebSocket 推送一致的状态快照
   json result = status_snapshot_json();
 
   // 3. 补充实时读取的当前版本和部署目录
-  result["selected_type"] = selected_type;
-  result["active_version"] = result["packages"][selected_type]["active_version"];
-  result["deploy_root"] = result["packages"][selected_type]["deploy_root"];
+  result["selected_package"] = selected;
+  result["selected_type"] = selected;
+  result["active_version"] = result["packages"][selected]["active_version"];
+  result["deploy_root"] = result["packages"][selected]["deploy_root"];
   return json_response(200, {{"code", 0}, {"message", "ok"}, {"data", std::move(result)}});
+}
+
+/**
+ * @brief 获取配置文件声明的全部软件包
+ * @return 可供前端动态生成选择器的软件包目录
+ */
+PluginHttpResponse VersionUpdatePlugin::handle_packages() {
+  return json_response(200,
+                       {{"code", 0}, {"message", "ok"}, {"data", package_catalog_json()}});
 }
 
 /**
@@ -338,13 +349,14 @@ void VersionUpdatePlugin::handle_ws_open(const char* session_id) {
  * @return 本地版本列表 HTTP 响应
  */
 PluginHttpResponse VersionUpdatePlugin::handle_local_versions(const PluginHttpRequest& request) {
-  // 1. 读取并校验前端当前选择的软件包类型
-  std::string type(request.param("type"));
-  if (type.empty()) type = "codeit-deploy";
-  if (!valid_type(type))
-    return json_error(400, "invalid_type", "type 必须是 codeit-deploy 或 frontend");
+  // 1. 读取并校验前端当前选择的软件包 ID
+  std::string package_id = resolve_package_id(std::string(request.param("package")));
+  if (package_id.empty()) package_id = resolve_package_id(std::string(request.param("type")));
+  if (package_id.empty()) package_id = resolve_package_id(std::string{});
+  if (package_id.empty()) return json_error(400, "invalid_package", "软件包不存在");
   // 2. 枚举对应根目录中的本地版本
-  return json_response(200, {{"code", 0}, {"message", "ok"}, {"data", local_versions_json(type)}});
+  return json_response(
+      200, {{"code", 0}, {"message", "ok"}, {"data", local_versions_json(package_id)}});
 }
 
 /**
@@ -373,7 +385,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_remote_versions(const json& reque
   json manifest;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    manifest = remote_manifest_;
+    manifest = remote_manifests_[job.package_id];
   }
   return json_response(200, {{"code", 0}, {"message", "ok"}, {"data", std::move(manifest)}});
 }
@@ -402,7 +414,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_download(const json& request) {
 
   // 3. 已经存在的本地版本不重复下载
   std::error_code ec;
-  if (fs::is_directory(package_root(job.type) / job.version, ec) && !ec)
+  if (fs::is_directory(package_root(job.package_id) / job.version, ec) && !ec)
     return json_error(409, "version_exists", "该版本已经下载，可直接切换");
 
   // 4. 在互斥锁保护下检查任务冲突并写入待执行队列
@@ -414,7 +426,7 @@ PluginHttpResponse VersionUpdatePlugin::handle_download(const json& request) {
     pending_job_ = job;
     state_ = "queued";
     message_ = "任务已进入下载队列";
-    target_type_ = job.type;
+    target_type_ = job.package_id;
     target_version_ = job.version;
     downloaded_bytes_ = 0;
     total_bytes_ = 0;
@@ -425,7 +437,8 @@ PluginHttpResponse VersionUpdatePlugin::handle_download(const json& request) {
   broadcast_status(true);
   job_cv_.notify_one();
   return json_response(202, {{"code", 0}, {"message", "下载任务已创建"},
-                             {"data", {{"type", job.type}, {"version", job.version},
+                             {"data", {{"package", job.package_id}, {"type", job.type},
+                                       {"version", job.version},
                                        {"state", "queued"}}}});
 }
 
@@ -456,10 +469,11 @@ PluginHttpResponse VersionUpdatePlugin::handle_cancel() {
  */
 PluginHttpResponse VersionUpdatePlugin::handle_switch(const json& request) {
   // 1. 读取并校验目标版本
-  const std::string type = request.value("type", "codeit-deploy");
+  std::string package_id = resolve_package_id(request.value("package", ""));
+  if (package_id.empty()) package_id = resolve_package_id(request.value("type", ""));
+  if (package_id.empty()) package_id = resolve_package_id(std::string{});
   const std::string version = request.value("version", "");
-  if (!valid_type(type))
-    return json_error(400, "invalid_type", "type 必须是 codeit-deploy 或 frontend");
+  if (package_id.empty()) return json_error(400, "invalid_package", "软件包不存在");
   if (!valid_version(version))
     return json_error(400, "invalid_version", "version 格式必须是 v主版本.次版本.修订号");
 
@@ -473,10 +487,11 @@ PluginHttpResponse VersionUpdatePlugin::handle_switch(const json& request) {
 
   // 3. 原子更新 current_version
   std::string error;
-  if (!activate_version(type, version, error)) return json_error(409, "switch_failed", error);
+  if (!activate_version(package_id, version, error))
+    return json_error(409, "switch_failed", error);
   broadcast_status(true);
   return json_response(200, {{"code", 0}, {"message", "版本切换成功"},
-                             {"data", {{"type", type}, {"active_version", version}}}});
+                             {"data", {{"package", package_id}, {"active_version", version}}}});
 }
 
 /**
@@ -516,7 +531,7 @@ void VersionUpdatePlugin::worker_loop(PluginStopToken stop) {
  */
 void VersionUpdatePlugin::execute_download(const DownloadJob& job, PluginStopToken stop) {
   // 1. 构建部署目录和临时下载文件路径
-  const fs::path root = package_root(job.type);
+  const fs::path root = package_root(job.package_id);
   const fs::path temporary_file = root / ".downloads" / (job.version + ".zip.part");
   std::string error;
   try {
@@ -561,7 +576,7 @@ void VersionUpdatePlugin::execute_download(const DownloadJob& job, PluginStopTok
     fs::remove(temporary_file, ec);
     if (job.activate) {
       set_state("activating", "正在切换到新版本");
-      if (!activate_version(job.type, job.version, error)) throw std::runtime_error(error);
+      if (!activate_version(job.package_id, job.version, error)) throw std::runtime_error(error);
     }
 
     // 8. 标记任务完成
@@ -654,7 +669,7 @@ std::optional<VersionUpdatePlugin::PackageInfo> VersionUpdatePlugin::fetch_packa
     json manifest = json::parse(body);
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      remote_manifest_ = manifest;
+      remote_manifests_[job.package_id] = manifest;
     }
 
     // 6. version 为空表示调用方只需要刷新清单
@@ -1149,7 +1164,9 @@ json VersionUpdatePlugin::local_versions_json(const std::string& type) const {
   }
 
   // 4. 返回统一的本地版本结构
-  return {{"type", type},
+  const auto config = package_configs_.find(type);
+  return {{"package", type},
+          {"type", config == package_configs_.end() ? "" : config->second.type},
           {"deploy_root", root.string()},
           {"active_version", active_version(type)},
           {"versions", std::move(versions)}};
@@ -1205,22 +1222,42 @@ bool VersionUpdatePlugin::load_config(std::string& error) {
       return false;
     }
 
-    // 3. 加载当前插件支持的两个软件包安装目录
+    // 3. 动态加载任意数量的软件包条目
     std::map<std::string, PackageConfig> loaded;
-    for (const std::string type : {"codeit-deploy", "frontend"}) {
-      const json item = packages.value(type, json::object());
+    for (const auto& entry : packages.items()) {
+      const std::string package_id = entry.key();
+      const json& item = entry.value();
+      if (!is_safe_path_component(package_id) || !item.is_object()) {
+        error = "packages 中的软件包 ID 或配置格式不合法: " + package_id;
+        return false;
+      }
       PackageConfig config;
       config.install_path = fs::path(item.value("install_path", ""));
+      config.type = item.value("type", valid_type(package_id) ? package_id : "");
       config.name = item.value("name", "");
+      config.label = item.value("label", package_id);
       if (config.install_path.empty() || !config.install_path.is_absolute()) {
-        error = type + ".install_path 必须是绝对路径";
+        error = package_id + ".install_path 必须是绝对路径";
         return false;
       }
-      if (type == "frontend" && config.name.empty()) {
-        error = "frontend 必须配置 name";
+      if (!valid_type(config.type)) {
+        error = package_id + ".type 必须是 codeit-deploy、codeit-lib、backend 或 frontend";
         return false;
       }
-      loaded.emplace(type, std::move(config));
+      if ((config.type == "backend" || config.type == "frontend") && config.name.empty()) {
+        error = package_id + " 使用 backend/frontend 类型时必须配置 name";
+        return false;
+      }
+      if ((config.type == "codeit-deploy" || config.type == "codeit-lib") &&
+          !config.name.empty()) {
+        error = package_id + " 使用 codeit-deploy/codeit-lib 类型时不能配置 name";
+        return false;
+      }
+      loaded.emplace(package_id, std::move(config));
+    }
+    if (loaded.empty()) {
+      error = "配置文件 packages 至少需要一个软件包条目";
+      return false;
     }
     package_configs_ = std::move(loaded);
     return true;
@@ -1320,20 +1357,27 @@ bool VersionUpdatePlugin::populate_job(const json& request, DownloadJob& job,
                                        std::string& error) const {
   try {
     job.type = request.value("type", "codeit-deploy");
-    const auto iterator = package_configs_.find(job.type);
+    job.package_id = resolve_package_id(request.value("package", ""));
+    if (job.package_id.empty()) job.package_id = resolve_package_id(job.type);
+    if (job.package_id.empty()) job.package_id = resolve_package_id(std::string{});
+    const auto iterator = package_configs_.find(job.package_id);
     if (iterator == package_configs_.end()) {
-      error = "type 必须是 codeit-deploy 或 frontend";
+      error = "软件包不存在";
       return false;
     }
     const PackageConfig& config = iterator->second;
+    job.type = config.type;
     job.server_url = normalize_server_url(request.value("server_url", default_server_url()));
     job.channel = request.value("channel", "test");
 
     // 仅按服务端对应软件包类型填充允许的查询字段。
-    if (job.type == "codeit-deploy") {
+    if (job.type == "codeit-deploy" || job.type == "codeit-lib") {
       job.arch = system_arch_;
       job.platform = system_platform_;
       job.os = system_os_;
+    } else if (job.type == "backend") {
+      job.name = config.name;
+      job.arch = system_arch_;
     } else {
       job.name = config.name;
     }
@@ -1363,9 +1407,48 @@ json VersionUpdatePlugin::package_query_json(const DownloadJob& job) {
  * @param type 软件包类型
  * @return 配置文件声明的安装目录
  */
-fs::path VersionUpdatePlugin::package_root(const std::string& type) const {
-  const auto iterator = package_configs_.find(type);
+fs::path VersionUpdatePlugin::package_root(const std::string& package_id) const {
+  const auto iterator = package_configs_.find(package_id);
   return iterator == package_configs_.end() ? fs::path{} : iterator->second.install_path;
+}
+
+/**
+ * @brief 将包 ID 或兼容的云端类型解析成配置条目 ID
+ * @param value 前端传入的软件包标识；为空时返回默认条目
+ * @return 匹配的配置条目 ID，无法匹配时返回空字符串
+ */
+std::string VersionUpdatePlugin::resolve_package_id(const std::string& value) const {
+  // 1. 优先按配置中的唯一 ID 精确匹配
+  if (!value.empty() && package_configs_.find(value) != package_configs_.end()) return value;
+
+  // 2. 兼容旧前端传入的云端 type
+  if (!value.empty()) {
+    for (const auto& [package_id, config] : package_configs_) {
+      if (config.type == value) return package_id;
+    }
+    return {};
+  }
+
+  // 3. 优先使用原有 codeit-deploy 条目，否则使用配置中的第一项
+  if (package_configs_.find("codeit-deploy") != package_configs_.end()) return "codeit-deploy";
+  return package_configs_.empty() ? std::string{} : package_configs_.begin()->first;
+}
+
+/**
+ * @brief 构建配置驱动的软件包目录
+ * @return 包含 ID、类型、名称、标签和本机状态的软件包数组
+ */
+json VersionUpdatePlugin::package_catalog_json() const {
+  json result = json::array();
+  for (const auto& [package_id, config] : package_configs_) {
+    result.push_back({{"id", package_id},
+                      {"type", config.type},
+                      {"name", config.name},
+                      {"label", config.label},
+                      {"install_path", config.install_path.string()},
+                      {"active_version", active_version(package_id)}});
+  }
+  return result;
 }
 
 /**
@@ -1387,7 +1470,8 @@ std::string VersionUpdatePlugin::default_server_url() const {
  * @return 支持该类型返回 true
  */
 bool VersionUpdatePlugin::valid_type(const std::string& type) {
-  return type == "codeit-deploy" || type == "frontend";
+  return type == "codeit-deploy" || type == "codeit-lib" || type == "backend" ||
+         type == "frontend";
 }
 
 /**
@@ -1536,6 +1620,7 @@ json VersionUpdatePlugin::status_snapshot_json() const {
               {"state", state_},
               {"message", message_},
               {"target_type", target_type_},
+              {"target_package", target_type_},
               {"target_version", target_version_},
               {"downloaded_bytes", downloaded_bytes_},
               {"total_bytes", total_bytes_},
@@ -1544,9 +1629,12 @@ json VersionUpdatePlugin::status_snapshot_json() const {
 
   // 当前版本读取不持有任务互斥锁，避免文件系统访问阻塞下载进度更新。
   json packages = json::object();
-  for (const std::string type : {"codeit-deploy", "frontend"}) {
-    packages[type] = {{"active_version", active_version(type)},
-                      {"deploy_root", package_root(type).string()}};
+  for (const auto& [package_id, config] : package_configs_) {
+    packages[package_id] = {{"type", config.type},
+                            {"name", config.name},
+                            {"label", config.label},
+                            {"active_version", active_version(package_id)},
+                            {"deploy_root", package_root(package_id).string()}};
   }
   result["packages"] = std::move(packages);
   result["system"] = {{"arch", system_arch_},

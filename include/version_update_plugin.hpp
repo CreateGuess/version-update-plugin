@@ -33,7 +33,8 @@ class VersionUpdatePlugin final : public PluginBase {
    * @brief 前端创建的下载任务参数
    */
   struct DownloadJob {
-    std::string type;        // 软件包类型：codeit-deploy 或 frontend
+    std::string package_id;  // 配置中的本机软件包唯一标识
+    std::string type;        // 云端类型：codeit-deploy、codeit-lib、backend 或 frontend
     std::string version;     // 目标版本，如 v1.3.50
     std::string server_url;  // 云端版本服务地址
     std::string arch;        // 软件包架构
@@ -49,7 +50,9 @@ class VersionUpdatePlugin final : public PluginBase {
    */
   struct PackageConfig {
     std::filesystem::path install_path; // 本机版本安装根目录
+    std::string type;                   // 云端软件包类型
     std::string name;                   // frontend/backend 组件名
+    std::string label;                  // 前端显示名称
   };
 
   /**
@@ -86,6 +89,8 @@ class VersionUpdatePlugin final : public PluginBase {
   PluginHttpResponse handle_http(const PluginHttpRequest& request);
   // 获取当前下载任务状态
   PluginHttpResponse handle_status(const PluginHttpRequest& request);
+  // 获取配置文件声明的软件包列表
+  PluginHttpResponse handle_packages();
   // 获取本地版本列表
   PluginHttpResponse handle_local_versions(const PluginHttpRequest& request);
   // 查询云端版本清单
@@ -127,7 +132,11 @@ class VersionUpdatePlugin final : public PluginBase {
   // 读取 current_version 指向的当前版本
   std::string active_version(const std::string& type) const;
   // 获取指定软件包类型的本机版本根目录
-  std::filesystem::path package_root(const std::string& type) const;
+  std::filesystem::path package_root(const std::string& package_id) const;
+  // 将前端传入的包 ID 或旧 type 参数解析成配置条目 ID
+  std::string resolve_package_id(const std::string& value) const;
+  // 构建前端使用的软件包目录
+  nlohmann::json package_catalog_json() const;
   // 从 /home/codeit/Desktop 配置文件加载服务器地址和安装路径
   bool load_config(std::string& error);
   // 从 Linux 系统信息识别架构、硬件平台和操作系统版本
@@ -185,7 +194,7 @@ class VersionUpdatePlugin final : public PluginBase {
   std::string target_version_;                  // 当前任务的目标版本
   std::uint64_t downloaded_bytes_{0};           // 已下载字节数
   std::uint64_t total_bytes_{0};                // 软件包总字节数
-  nlohmann::json remote_manifest_;              // 最近一次查询到的云端版本清单
+  std::map<std::string, nlohmann::json> remote_manifests_; // 各软件包最近一次云端清单
   std::filesystem::path config_path_;            // 当前使用的本机配置文件
   std::string configured_server_url_;            // 配置文件中的云端服务地址
   std::map<std::string, PackageConfig> package_configs_; // 各软件包安装与查询配置

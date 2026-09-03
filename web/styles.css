@@ -100,6 +100,7 @@ main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding-bottom: 40
 }
 .package-switcher > span, .hero-version > span { color: var(--muted); font-size: 14px; font-weight: 650; }
 .package-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+.package-loading { grid-column: 1 / -1; padding: 18px; border-radius: 16px; color: var(--muted); background: #f8f9ff; font-size: 14px; }
 .package-options button { padding: 17px; border: 1px solid var(--line); border-radius: 18px; text-align: left; background: #f8f9ff; transition: 160ms ease; }
 .package-options button:hover { transform: translateY(-2px); border-color: rgba(83, 117, 255, 0.4); }
 .package-options button.active { border-color: transparent; color: white; background: linear-gradient(125deg, var(--blue), var(--violet)); box-shadow: 0 12px 25px rgba(83, 117, 255, 0.23); }
