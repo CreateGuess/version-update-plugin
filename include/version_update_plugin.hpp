@@ -137,7 +137,7 @@ class VersionUpdatePlugin final : public PluginBase {
   std::string resolve_package_id(const std::string& value) const;
   // 构建前端使用的软件包目录
   nlohmann::json package_catalog_json() const;
-  // 从 /home/codeit/Desktop 配置文件加载服务器地址和安装路径
+  // 从对应架构默认用户（x86: codeit，ARM: pi）的桌面配置文件加载配置
   bool load_config(std::string& error);
   // 从 Linux 系统信息识别架构、硬件平台和操作系统版本
   bool detect_system(std::string& error);

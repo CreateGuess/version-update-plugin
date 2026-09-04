@@ -28,6 +28,23 @@ namespace {
 constexpr char kEndpoint[] = "version_update";
 
 /**
+ * @brief 根据机器架构选择默认用户的桌面配置文件
+ * @param machine 系统架构，如 x86_64、aarch64 或 armv7l
+ * @return x86 对应 codeit 用户，ARM 对应 pi 用户
+ */
+fs::path default_config_path_for_arch(const std::string& machine) {
+  const bool arm = machine == "aarch64" || machine.compare(0, 3, "arm") == 0;
+  const bool x86 = machine == "x86_64" || machine == "amd64" || machine == "x86" ||
+                   machine == "i386" || machine == "i486" || machine == "i586" ||
+                   machine == "i686";
+  if (!arm && !x86)
+    throw std::invalid_argument("无法为该架构选择默认配置路径: " + machine +
+                                "，请设置 CODEIT_UPDATE_CONFIG");
+  return fs::path("/home") / (arm ? "pi" : "codeit") / "Desktop" /
+         "version-update-plugin.json";
+}
+
+/**
  * @brief 删除 URL 末尾多余的斜杠
  * @param value 待处理的 URL
  * @return 规范化后的 URL
@@ -109,14 +126,29 @@ bool is_safe_path_component(const std::string& value) {
 }
 
 /**
- * @brief 将版本号转换为可比较的三段数字
- * @param version 版本号，如 v1.3.50
- * @return 主版本号、次版本号和修订号
+ * @brief 将云端 ZIP 文件名转换成本地版本目录名
+ * @param version 云端版本标识或文件名
+ * @return 去掉末尾 .zip 的版本目录名
+ */
+std::string local_version_name(std::string version) {
+  if (version.size() > 4 && version.compare(version.size() - 4, 4, ".zip") == 0)
+    version.resize(version.size() - 4);
+  return version;
+}
+
+/**
+ * @brief 提取普通版本或带软件名前缀的数字版本，供校验和排序使用
+ * @param version 如 v1.3.48、codeit-1.3.48 或 codeit-1.3.48.zip
+ * @return 三段数字版本；格式非法或数字溢出时抛出异常
  */
 std::array<unsigned long long, 3> version_parts(const std::string& version) {
-  std::array<unsigned long long, 3> result{};
-  std::sscanf(version.c_str(), "v%llu.%llu.%llu", &result[0], &result[1], &result[2]);
-  return result;
+  static const std::regex pattern(
+      R"(^(?:v|[A-Za-z0-9][A-Za-z0-9._-]*-v?)([0-9]+)\.([0-9]+)\.([0-9]+)$)");
+  const std::string name = local_version_name(version);
+  std::smatch match;
+  if (!std::regex_match(name, match, pattern)) throw std::invalid_argument("非法版本标识");
+  return {std::stoull(match[1].str()), std::stoull(match[2].str()),
+          std::stoull(match[3].str())};
 }
 }  // namespace
 
@@ -401,12 +433,12 @@ PluginHttpResponse VersionUpdatePlugin::handle_download(const json& request) {
   std::string error;
   if (!populate_job(request, job, error))
     return json_error(400, "invalid_parameters", error);
-  job.version = request.value("version", "");
+  job.version = local_version_name(request.value("version", ""));
   job.activate = request.value("activate", false);
 
   // 2. 校验版本号、服务器地址和发布通道
   if (!valid_version(job.version))
-    return json_error(400, "invalid_version", "version 格式必须是 v主版本.次版本.修订号");
+    return json_error(400, "invalid_version", "版本格式应为 v1.3.48 或 codeit-1.3.48.zip");
   if (!valid_server_url(job.server_url))
     return json_error(400, "invalid_server_url", "server_url 必须是合法的 http:// 或 https:// 地址");
   if (job.channel != "test" && job.channel != "release")
@@ -472,10 +504,10 @@ PluginHttpResponse VersionUpdatePlugin::handle_switch(const json& request) {
   std::string package_id = resolve_package_id(request.value("package", ""));
   if (package_id.empty()) package_id = resolve_package_id(request.value("type", ""));
   if (package_id.empty()) package_id = resolve_package_id(std::string{});
-  const std::string version = request.value("version", "");
+  const std::string version = local_version_name(request.value("version", ""));
   if (package_id.empty()) return json_error(400, "invalid_package", "软件包不存在");
   if (!valid_version(version))
-    return json_error(400, "invalid_version", "version 格式必须是 v主版本.次版本.修订号");
+    return json_error(400, "invalid_version", "版本格式应为 v1.3.48 或 codeit-1.3.48.zip");
 
   // 2. 下载任务执行期间禁止并发切换版本
   {
@@ -683,7 +715,7 @@ std::optional<VersionUpdatePlugin::PackageInfo> VersionUpdatePlugin::fetch_packa
 
     // 8. 查找目标版本并校验必要字段
     for (const auto& item : manifest["packages"]) {
-      if (item.value("version", "") != job.version) continue;
+      if (local_version_name(item.value("version", "")) != job.version) continue;
       const json download = item.value("download", json::object());
       const std::string download_method = download.value("method", "");
       PackageInfo package{job.version, download.value("url", ""),
@@ -1198,11 +1230,27 @@ std::string VersionUpdatePlugin::active_version(const std::string& type) const {
  */
 bool VersionUpdatePlugin::load_config(std::string& error) {
   try {
-    // 1. 默认读取 /home/codeit/Desktop/version-update-plugin.json
+    // 1. 优先使用显式配置路径，否则按机器架构选择 codeit/pi 的桌面目录
     const char* configured_path = std::getenv("CODEIT_UPDATE_CONFIG");
-    config_path_ = configured_path && configured_path[0]
-                       ? fs::path(configured_path)
-                       : fs::path("/home/codeit/Desktop/version-update-plugin.json");
+    if (configured_path && configured_path[0]) {
+      config_path_ = fs::path(configured_path);
+    } else {
+#if defined(__linux__)
+      struct utsname information {};
+      if (uname(&information) != 0) {
+        error = "无法读取系统架构以选择默认配置文件，请设置 CODEIT_UPDATE_CONFIG";
+        return false;
+      }
+      config_path_ = default_config_path_for_arch(lowercase(information.machine));
+#elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM64) || defined(_M_ARM)
+      config_path_ = default_config_path_for_arch("aarch64");
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+      config_path_ = default_config_path_for_arch("x86_64");
+#else
+      error = "无法识别默认配置路径，请设置 CODEIT_UPDATE_CONFIG";
+      return false;
+#endif
+    }
     std::ifstream input(config_path_, std::ios::binary);
     if (!input) {
       error = "无法读取配置文件: " + config_path_.string();
@@ -1477,11 +1525,17 @@ bool VersionUpdatePlugin::valid_type(const std::string& type) {
 /**
  * @brief 检查版本号格式是否合法
  * @param version 版本号
- * @return 符合 v主版本.次版本.修订号 格式返回 true
+ * @return 版本格式合法且三段数字未溢出时返回 true
  */
 bool VersionUpdatePlugin::valid_version(const std::string& version) {
-  static const std::regex pattern(R"(^v[0-9]+\.[0-9]+\.[0-9]+$)");
-  return std::regex_match(version, pattern);
+  try {
+    // 请求入口只剥离一次扩展名；本地目录标识不得再包含 ZIP 扩展名。
+    if (local_version_name(version) != version) return false;
+    (void)version_parts(version);
+    return true;
+  } catch (const std::exception&) {
+    return false;
+  }
 }
 
 /**

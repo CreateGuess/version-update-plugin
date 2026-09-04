@@ -311,8 +311,9 @@ function renderRemoteVersions(packages) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "card-button download-action";
-    button.textContent = localVersionNames.has(pkg.version) ? "已下载" : "下载版本 →";
-    button.disabled = localVersionNames.has(pkg.version) || busyStates.has(lastState);
+    const installed = localVersionNames.has(pkg.version.replace(/\.zip$/, ""));
+    button.textContent = installed ? "已下载" : "下载版本 →";
+    button.disabled = installed || busyStates.has(lastState);
     button.addEventListener("click", () => startDownload(pkg.version, activate.checked));
     actions.append(activateLabel, button);
     card.append(actions);

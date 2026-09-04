@@ -44,12 +44,19 @@ SHA-256 校验使用 `OpenSSL::Crypto`，不要求 OpenSSL 3，在 OpenSSL 1.1.x
 
 ## 运行配置
 
-插件默认读取 `/home/codeit/Desktop/version-update-plugin.json`。安装示例配置：
+插件根据运行机器架构选择默认配置路径，不使用运行进程的 `$HOME`：
+
+- x86：`/home/codeit/Desktop/version-update-plugin.json`
+- ARM：`/home/pi/Desktop/version-update-plugin.json`
+
+`CODEIT_UPDATE_CONFIG` 非空时优先使用该路径。x86 安装示例配置：
 
 ```bash
 cp config/version-update-plugin.json /home/codeit/Desktop/version-update-plugin.json
 vim /home/codeit/Desktop/version-update-plugin.json
 ```
+
+ARM 设备将上述目标路径改成 `/home/pi/Desktop/version-update-plugin.json`。
 
 配置格式：
 
@@ -139,6 +146,15 @@ frontend/robot-platform/
 普通文件，则写入 `v1.3.50` 这样的版本文本并原子替换。
 
 ## 前端接口
+
+### codeit-lib 文件名兼容
+
+支持 `v1.3.48.zip`、`codeit-1.3.48.zip`、`codeit-v1.3.48.zip`。
+云端 `version` 可以是完整文件名；插件使用不带 `.zip` 的本地目录名，
+例如 `/usr/codeit/codeit-1.3.48`，断点文件为
+`/usr/codeit/.downloads/codeit-1.3.48.zip.part`。
+下载请求仍使用云端返回的原始 `download.body.filename`，不会改写文件名。
+本地版本按三段数字排序，版本切换支持这些目录名。
 
 插件已经适配新版云端服务协议：版本清单通过 JSON `POST /api/version` 查询，
 软件包按照清单中的 `download.method`、`download.url` 和 `download.body` 使用
