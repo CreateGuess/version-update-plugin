@@ -40,8 +40,10 @@ fs::path default_config_path_for_arch(const std::string& machine) {
   if (!arm && !x86)
     throw std::invalid_argument("无法为该架构选择默认配置路径: " + machine +
                                 "，请设置 CODEIT_UPDATE_CONFIG");
-  return fs::path("/home") / (arm ? "pi" : "codeit") / "Desktop" / "rpc_gateway" / "current_version" / "config" /
-         "version-update-plugin.json";
+  // return fs::path("/home") / (arm ? "pi" : "codeit") / "Desktop" / "rpc_gateway" / "current_version" / "config" /
+  //        "version-update-plugin.json";
+
+  return fs::path("../") / "config" / "version-update-plugin.json";
 }
 
 /**
