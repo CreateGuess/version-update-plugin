@@ -1,0 +1,39 @@
+{
+  "server_url": "http://update.zsrob.com:28000",
+  "packages": {
+    "codeit-deploy": {
+      "type": "codeit-deploy",
+      "label": "CODEIT-DEPLOY",
+      "install_path": "/home/pi/Desktop/codeit-deploy_aarch64"
+    },
+    "frontend": {
+      "type": "frontend",
+      "label": "FRONTEND",
+      "install_path": "/home/pi/Desktop/frontend/robot-platform",
+      "name": "robot-platform"
+    },
+    "rpc-gateway": {
+      "type": "backend",
+      "name": "rpc_gateway",
+      "label": "RPC GATEWAY",
+      "install_path": "/home/pi/Desktop/rpc_gateway"
+    },
+    "node_manager": {
+      "type": "backend",
+      "name": "node_manager",
+      "label": "NODE MANAGER",
+      "install_path": "/home/pi/Desktop/node_manager"
+    },
+    "robot-rcommand": {
+      "type": "backend",
+      "name": "robot-rcommand",
+      "label": "ROBOT RCOMMAND",
+      "install_path": "/home/pi/Desktop/robot-rcommand"
+    },
+    "codeit-lib": {
+      "type": "codeit-lib",
+      "label": "CODEIT-LIB",
+      "install_path": "/usr/codeit"
+    }
+  }
+}
