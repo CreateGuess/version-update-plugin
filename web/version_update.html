@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Codeit 本地版本下载与切换控制台" />
+    <title>Codeit · 版本控制台</title>
+    <style>
+:root {
+  color-scheme: light;
+  --ink: #18213a;
+  --muted: #647091;
+  --dim: #8b95b1;
+  --paper: #f7f9ff;
+  --panel: rgba(255, 255, 255, 0.9);
+  --line: rgba(86, 103, 157, 0.16);
+  --blue: #5375ff;
+  --blue-soft: rgba(83, 117, 255, 0.12);
+  --violet: #8d5cff;
+  --pink: #ff6fa9;
+  --yellow: #ffd85c;
+  --mint: #48d7b1;
+  --red: #f05269;
+  --shadow: 0 22px 70px rgba(73, 92, 154, 0.14);
+  --radius: 22px;
+  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 7% 12%, rgba(255, 216, 92, 0.2), transparent 25%),
+    radial-gradient(circle at 94% 34%, rgba(141, 92, 255, 0.16), transparent 27%),
+    linear-gradient(180deg, #fbfcff 0%, #f4f7ff 45%, #fff9fc 100%);
+  font-size: 16px;
+}
+
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+.color-orb { position: fixed; z-index: -1; border-radius: 50%; filter: blur(3px); pointer-events: none; }
+.orb-one { top: 120px; left: -90px; width: 230px; height: 230px; background: rgba(72, 215, 177, 0.15); }
+.orb-two { right: -70px; bottom: 12%; width: 200px; height: 200px; background: rgba(255, 111, 169, 0.14); }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 76px;
+  padding: 0 max(22px, calc((100vw - 1180px) / 2));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.75);
+  background: rgba(248, 250, 255, 0.78);
+  backdrop-filter: blur(18px);
+}
+.brand { display: flex; align-items: center; gap: 12px; color: var(--ink); text-decoration: none; }
+.brand-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  color: white;
+  background: linear-gradient(135deg, var(--blue), var(--violet));
+  box-shadow: 0 10px 24px rgba(83, 117, 255, 0.3);
+  font-weight: 900;
+}
+.brand strong { display: block; font-size: 15px; letter-spacing: 0.08em; }
+.brand small { display: block; margin-top: 2px; color: var(--dim); font: 11px var(--mono); letter-spacing: 0.08em; }
+.connection {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.75);
+  font-size: 14px;
+}
+.connection-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--yellow); box-shadow: 0 0 0 5px rgba(255, 216, 92, 0.2); }
+.connection[data-state="online"] .connection-dot { background: var(--mint); box-shadow: 0 0 0 5px rgba(72, 215, 177, 0.16); }
+.connection[data-state="offline"] .connection-dot { background: var(--red); box-shadow: 0 0 0 5px rgba(240, 82, 105, 0.12); }
+
+main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding-bottom: 40px; }
+.hero { min-height: 430px; padding: 70px 0 48px; display: grid; grid-template-columns: 0.9fr 1.1fr; align-items: center; gap: clamp(40px, 7vw, 100px); }
+.eyebrow, .section-index { color: var(--blue); font: 700 13px var(--mono); letter-spacing: 0.11em; text-transform: uppercase; }
+.hero h1 { margin: 14px 0 20px; font-size: clamp(48px, 6.7vw, 88px); line-height: 0.98; letter-spacing: -0.065em; }
+.hero h1 em { color: transparent; background: linear-gradient(100deg, var(--blue), var(--violet) 52%, var(--pink)); background-clip: text; font-style: normal; }
+.hero-copy { max-width: 580px; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.8; }
+.hero-side { position: relative; display: grid; gap: 18px; }
+.hero-side::before { content: "NEW"; position: absolute; top: -25px; right: 16px; padding: 8px 13px; border-radius: 10px; color: #6c5410; background: var(--yellow); transform: rotate(7deg); font: 800 12px var(--mono); box-shadow: 0 8px 20px rgba(219, 167, 24, 0.2); }
+.package-switcher, .hero-version {
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 28px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.package-switcher > span, .hero-version > span { color: var(--muted); font-size: 14px; font-weight: 650; }
+.package-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; }
+.package-loading { grid-column: 1 / -1; padding: 18px; border-radius: 16px; color: var(--muted); background: #f8f9ff; font-size: 14px; }
+.package-options button { padding: 17px; border: 1px solid var(--line); border-radius: 18px; text-align: left; background: #f8f9ff; transition: 160ms ease; }
+.package-options button:hover { transform: translateY(-2px); border-color: rgba(83, 117, 255, 0.4); }
+.package-options button.active { border-color: transparent; color: white; background: linear-gradient(125deg, var(--blue), var(--violet)); box-shadow: 0 12px 25px rgba(83, 117, 255, 0.23); }
+.package-options strong, .package-options small { display: block; }
+.package-options strong { font-size: 14px; }
+.package-options small { margin-top: 5px; color: var(--dim); font-size: 12px; }
+.package-options button.active small { color: rgba(255, 255, 255, 0.74); }
+.package-switcher > small { display: block; margin-top: 13px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.hero-version { border-left: 6px solid var(--pink); }
+.hero-version strong { display: block; margin: 9px 0 7px; font: 700 clamp(30px, 4vw, 46px)/1 var(--mono); }
+.hero-version small { color: var(--dim); font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+
+.panel, .version-card, .empty-card { border: 1px solid rgba(255, 255, 255, 0.88); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+.panel { margin-top: 24px; }
+.settings, .task-panel, .activity { padding: clamp(24px, 4vw, 38px); }
+.section-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 28px; }
+.section-heading.compact { align-items: center; margin-bottom: 22px; }
+.section-heading.outside { margin-top: 66px; }
+.section-heading h2 { margin: 7px 0 0; font-size: clamp(25px, 3vw, 36px); letter-spacing: -0.04em; }
+
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr 0.45fr; gap: 14px; align-items: end; }
+.field { min-width: 0; }
+.field span, .system-profile span { display: block; margin-bottom: 9px; color: var(--muted); font-size: 14px; font-weight: 650; }
+.field input, .field select {
+  width: 100%;
+  height: 52px;
+  padding: 0 15px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  outline: none;
+  background: #f8f9ff;
+  font: 14px var(--mono);
+  transition: 160ms ease;
+}
+.field input:focus, .field select:focus { border-color: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); background: white; }
+.system-profile { grid-column: 1 / -1; padding: 15px 18px; border-radius: 16px; color: var(--muted); background: linear-gradient(90deg, rgba(72, 215, 177, 0.12), rgba(83, 117, 255, 0.08)); }
+.system-profile span { display: inline; margin: 0 12px 0 0; color: #258e75; }
+.system-profile strong { font: 600 13px var(--mono); }
+
+button { border-radius: 14px; transition: transform 140ms, box-shadow 140ms, border-color 140ms, opacity 140ms; }
+button:hover:not(:disabled) { transform: translateY(-2px); }
+button:disabled { cursor: not-allowed; opacity: 0.42; }
+.primary-button { padding: 13px 19px; border: 0; color: white; background: linear-gradient(110deg, var(--blue), var(--violet)); box-shadow: 0 10px 25px rgba(83, 117, 255, 0.24); font-weight: 750; }
+.text-button { padding: 9px 13px; border: 1px solid var(--line); color: var(--blue); background: var(--blue-soft); font-size: 14px; font-weight: 700; }
+.icon-button { width: 46px; height: 46px; border: 1px solid var(--line); background: white; font-size: 22px; }
+.danger-button { padding: 9px 13px; border: 1px solid rgba(240, 82, 105, 0.3); color: var(--red); background: rgba(240, 82, 105, 0.07); font-size: 13px; }
+
+.state-pill { padding: 8px 13px; border-radius: 999px; color: var(--muted); background: #f0f2f9; font-size: 13px; font-weight: 700; }
+.state-pill[data-state="downloading"], .state-pill[data-state="checking"], .state-pill[data-state="verifying"], .state-pill[data-state="extracting"], .state-pill[data-state="activating"], .state-pill[data-state="queued"] { color: var(--blue); background: var(--blue-soft); }
+.state-pill[data-state="failed"] { color: var(--red); background: rgba(240, 82, 105, 0.1); }
+.state-pill[data-state="completed"] { color: #238d73; background: rgba(72, 215, 177, 0.14); }
+.task-summary { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin: 42px 0 20px; }
+.summary-label { color: var(--dim); font-size: 13px; font-weight: 650; }
+.task-summary strong { display: block; margin-top: 8px; font: 650 25px var(--mono); }
+.task-summary p { margin: 9px 0 0; color: var(--muted); font-size: 15px; }
+.progress-number { display: flex; align-items: start; }
+.progress-number strong { margin: 0; font: 750 54px/0.9 var(--mono); }
+.progress-number span { color: var(--pink); font: 20px var(--mono); }
+.progress-track { height: 12px; overflow: hidden; border-radius: 999px; background: #edf0f8; }
+.progress-track > span { display: block; width: 0%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--blue), var(--violet), var(--pink)); transition: width 400ms ease; }
+.progress-meta { min-height: 40px; margin-top: 11px; display: flex; align-items: center; justify-content: space-between; color: var(--dim); font: 13px var(--mono); }
+.phase-list { margin: 30px 0 0; padding: 0; display: grid; grid-template-columns: repeat(5, 1fr); list-style: none; border-top: 2px solid #edf0f8; }
+.phase-list li { position: relative; padding-top: 18px; color: var(--dim); }
+.phase-list li::before { content: ""; position: absolute; top: -6px; left: 0; width: 10px; height: 10px; border: 2px solid white; border-radius: 50%; background: #cdd3e4; }
+.phase-list span { display: block; font: 11px var(--mono); }
+.phase-list strong { display: block; margin-top: 5px; font-size: 14px; }
+.phase-list li.done, .phase-list li.active { color: var(--ink); }
+.phase-list li.done::before { background: var(--mint); }
+.phase-list li.active::before { background: var(--pink); box-shadow: 0 0 0 6px rgba(255, 111, 169, 0.14); }
+
+.version-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.version-card, .empty-card { min-height: 205px; padding: 26px; }
+.version-card { display: flex; flex-direction: column; justify-content: space-between; transition: 160ms ease; }
+.version-card:hover { transform: translateY(-4px); border-color: rgba(83, 117, 255, 0.25); box-shadow: 0 26px 60px rgba(73, 92, 154, 0.18); }
+.version-card.is-active { background: linear-gradient(135deg, rgba(72, 215, 177, 0.12), white 55%); }
+.version-card-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.version-card .tag { color: var(--violet); font: 700 12px var(--mono); letter-spacing: 0.06em; }
+.version-card .tag.active { color: #238d73; }
+.version-card h3 { margin: 12px 0 0; font: 700 clamp(28px, 4vw, 39px)/1 var(--mono); letter-spacing: -0.055em; }
+.version-card-meta { display: flex; gap: 22px; margin-top: 18px; color: var(--muted); font: 13px var(--mono); }
+.version-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 28px; }
+.version-actions label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
+.version-actions input { accent-color: var(--blue); }
+.card-button { padding: 11px 15px; border: 1px solid var(--line); color: var(--blue); background: var(--blue-soft); font-size: 13px; font-weight: 700; }
+.empty-card { grid-column: 1 / -1; display: grid; place-items: center; align-content: center; text-align: center; color: var(--muted); }
+.empty-card > span { color: var(--pink); font-size: 30px; }
+.empty-card p { margin: 12px 0 4px; font-weight: 650; }
+.empty-card small { color: var(--dim); font-size: 13px; }
+
+.activity { margin-top: 66px; }
+.activity-log { max-height: 240px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.activity-log li { display: grid; grid-template-columns: 92px 1fr; gap: 16px; padding: 12px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+.activity-log time { color: var(--dim); font: 12px var(--mono); }
+footer { width: min(1180px, calc(100% - 40px)); margin: 66px auto 0; padding: 30px 0 42px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; color: var(--dim); font: 12px var(--mono); letter-spacing: 0.08em; }
+.toast-region { position: fixed; right: 24px; bottom: 24px; z-index: 40; display: grid; gap: 10px; width: min(380px, calc(100% - 48px)); }
+.toast { padding: 15px 17px; border-radius: 15px; border-left: 4px solid var(--mint); background: white; box-shadow: var(--shadow); font-size: 14px; animation: toast-in 200ms ease both; }
+.toast.error { border-left-color: var(--red); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; min-height: auto; }
+  .settings-grid { grid-template-columns: 1fr 1fr; }
+  .system-profile { grid-column: 1 / -1; }
+}
+@media (max-width: 680px) {
+  .topbar { height: 68px; padding-inline: 16px; }
+  .connection span:last-child { display: none; }
+  main { width: min(100% - 28px, 1180px); }
+  .hero { padding: 52px 0 34px; }
+  .hero h1 { font-size: clamp(46px, 15vw, 70px); }
+  .settings-grid, .version-grid { grid-template-columns: 1fr; }
+  .system-profile { grid-column: auto; }
+  .task-summary { align-items: start; }
+  .task-summary p { max-width: 230px; }
+  .phase-list strong { font-size: 12px; }
+  .section-heading.outside { margin-top: 52px; }
+  footer { width: calc(100% - 28px); flex-direction: column; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}
+
+    </style>
+  </head>
+  <body>
+    <div class="color-orb orb-one" aria-hidden="true"></div>
+    <div class="color-orb orb-two" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Codeit 版本控制台首页">
+        <span class="brand-mark">C</span>
+        <span>
+          <strong>CODEIT</strong>
+          <small>VERSION CONTROL</small>
+        </span>
+      </a>
+      <div class="connection" id="connectionState" data-state="checking">
+        <span class="connection-dot"></span>
+        <span id="connectionText">正在连接本机服务</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">CODEIT UPDATE STATION ✦</p>
+          <h1>版本上新，<br /><em>轻松搞定。</em></h1>
+          <p class="hero-copy">发现新版本、下载、校验、切换，一站完成。设备信息由系统自动识别。</p>
+        </div>
+        <div class="hero-side">
+          <div class="package-switcher">
+            <span>当前管理目标</span>
+            <input id="packageType" type="hidden" value="codeit-deploy" />
+            <div class="package-options" role="group" aria-label="选择软件包类型">
+              <span class="package-loading">正在读取软件包…</span>
+            </div>
+            <small id="packageHint">管理主程序版本与设备部署目录</small>
+          </div>
+          <div class="hero-version" aria-label="当前运行版本">
+            <span>当前版本</span>
+            <strong id="heroActiveVersion">—</strong>
+            <small id="deployRoot">等待本机服务响应</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings panel" aria-labelledby="settingsTitle">
+        <div class="section-heading compact">
+          <div>
+            <span class="section-index">配置</span>
+            <h2 id="settingsTitle">连接参数</h2>
+          </div>
+          <button class="text-button" type="button" id="saveSettingsButton">保存配置</button>
+        </div>
+        <div class="settings-grid">
+          <label class="field field-wide">
+            <span>本机插件 API</span>
+            <input id="apiBase" type="url" spellcheck="false" />
+          </label>
+          <label class="field field-wide">
+            <span>云端版本服务</span>
+            <input id="serverUrl" type="url" placeholder="http://192.168.2.100:28000" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span>发布通道</span>
+            <select id="channel">
+              <option value="test">test</option>
+              <option value="release">release</option>
+            </select>
+          </label>
+          <div class="system-profile" aria-live="polite">
+            <span>系统自动识别</span>
+            <strong id="systemProfile">正在读取设备信息…</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="task-panel panel" aria-labelledby="taskTitle">
+        <div class="section-heading">
+          <div>
+            <span class="section-index">实时任务</span>
+            <h2 id="taskTitle">下载流程</h2>
+          </div>
+          <span class="state-pill" id="taskState" data-state="idle">空闲</span>
+        </div>
+
+        <div class="task-summary">
+          <div>
+            <span class="summary-label">目标版本</span>
+            <strong id="targetVersion">暂无任务</strong>
+            <p id="taskMessage">可以从下方选择云端版本开始下载。</p>
+          </div>
+          <div class="progress-number"><strong id="progressValue">0</strong><span>%</span></div>
+        </div>
+
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progressTrack">
+          <span id="progressBar"></span>
+        </div>
+        <div class="progress-meta">
+          <span id="downloadBytes">0 B / 0 B</span>
+          <button class="danger-button" type="button" id="cancelButton" disabled>取消任务</button>
+        </div>
+
+        <ol class="phase-list" id="phaseList">
+          <li data-phase="checking"><span>01</span><strong>检查</strong></li>
+          <li data-phase="downloading"><span>02</span><strong>下载</strong></li>
+          <li data-phase="verifying"><span>03</span><strong>校验</strong></li>
+          <li data-phase="extracting"><span>04</span><strong>解压</strong></li>
+          <li data-phase="activating"><span>05</span><strong>切换</strong></li>
+        </ol>
+      </section>
+
+      <section class="versions-section" aria-labelledby="remoteTitle">
+        <div class="section-heading outside">
+          <div>
+            <span class="section-index">云端</span>
+            <h2 id="remoteTitle">可用版本</h2>
+          </div>
+          <button class="primary-button" type="button" id="refreshRemoteButton">查询云端版本</button>
+        </div>
+        <div class="version-grid" id="remoteVersions">
+          <div class="empty-card">
+            <span>↗</span>
+            <p>尚未查询云端版本</p>
+            <small>设置版本服务地址后点击“查询云端版本”</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="versions-section" aria-labelledby="localTitle">
+        <div class="section-heading outside">
+          <div>
+            <span class="section-index">本机</span>
+            <h2 id="localTitle">已下载版本</h2>
+          </div>
+          <button class="icon-button" type="button" id="refreshLocalButton" aria-label="刷新本地版本">↻</button>
+        </div>
+        <div class="version-grid" id="localVersions">
+          <div class="empty-card"><p>正在读取本地版本…</p></div>
+        </div>
+      </section>
+
+      <section class="activity panel" aria-labelledby="activityTitle">
+        <div class="section-heading compact">
+          <div>
+            <span class="section-index">记录</span>
+            <h2 id="activityTitle">操作日志</h2>
+          </div>
+          <button class="text-button" type="button" id="clearLogButton">清空</button>
+        </div>
+        <ol id="activityLog" class="activity-log">
+          <li><time>--:--:--</time><span>控制台已就绪</span></li>
+        </ol>
+      </section>
+    </main>
+
+    <footer>
+      <span>CODEIT VERSION CONTROL</span>
+      <span>LOCAL DEPLOYMENT INTERFACE</span>
+    </footer>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+    <script>
+"use strict";
+
+const $ = (selector) => document.querySelector(selector);
+const elements = {
+  apiBase: $("#apiBase"),
+  serverUrl: $("#serverUrl"),
+  packageType: $("#packageType"),
+  packageOptions: $(".package-options"),
+  packageHint: $("#packageHint"),
+  channel: $("#channel"),
+  systemProfile: $("#systemProfile"),
+  connection: $("#connectionState"),
+  connectionText: $("#connectionText"),
+  activeVersion: $("#heroActiveVersion"),
+  deployRoot: $("#deployRoot"),
+  taskState: $("#taskState"),
+  targetVersion: $("#targetVersion"),
+  taskMessage: $("#taskMessage"),
+  progressValue: $("#progressValue"),
+  progressTrack: $("#progressTrack"),
+  progressBar: $("#progressBar"),
+  downloadBytes: $("#downloadBytes"),
+  cancelButton: $("#cancelButton"),
+  phaseList: $("#phaseList"),
+  remoteVersions: $("#remoteVersions"),
+  remoteTitle: $("#remoteTitle"),
+  localVersions: $("#localVersions"),
+  localTitle: $("#localTitle"),
+  refreshRemoteButton: $("#refreshRemoteButton"),
+  refreshLocalButton: $("#refreshLocalButton"),
+  saveSettingsButton: $("#saveSettingsButton"),
+  activityLog: $("#activityLog"),
+  clearLogButton: $("#clearLogButton"),
+  toastRegion: $("#toastRegion"),
+};
+
+const phases = ["checking", "downloading", "verifying", "extracting", "activating"];
+const busyStates = new Set(["queued", ...phases]);
+const stateLabels = {
+  idle: "空闲", queued: "排队中", checking: "检查中", downloading: "下载中",
+  verifying: "校验中", extracting: "解压中", activating: "切换中",
+  completed: "已完成", failed: "失败", canceled: "已取消",
+};
+
+let statusSocket = null;
+let reconnectTimer = null;
+let lastState = "";
+let localVersionNames = new Set();
+let remotePackages = [];
+let packageCatalog = [];
+
+function defaultApiBase() {
+  const host = window.location.hostname || "127.0.0.1";
+  return `http://${host}/backend/plugin-http/version_update`;
+}
+
+function statusWebSocketUrl() {
+  const apiUrl = new URL(elements.apiBase.value.trim());
+  apiUrl.protocol = apiUrl.protocol === "https:" ? "wss:" : "ws:";
+  apiUrl.pathname = apiUrl.pathname.replace(
+    /\/backend\/plugin-http\/version_update\/?$/,
+    "/backend/plugin-ws/version_update",
+  );
+  apiUrl.search = "";
+  apiUrl.hash = "";
+  return apiUrl.toString();
+}
+
+function connectStatusSocket() {
+  window.clearTimeout(reconnectTimer);
+  if (statusSocket) {
+    statusSocket.onclose = null;
+    statusSocket.close();
+  }
+
+  try {
+    const socket = new WebSocket(statusWebSocketUrl());
+    statusSocket = socket;
+    socket.addEventListener("open", () => {
+      setConnection(true);
+      socket.send("snapshot");
+    });
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type !== "status") return;
+        const selected = elements.packageType.value;
+        const packageState = message.packages?.[selected] || {};
+        const status = { ...message, ...packageState, selected_type: selected };
+        renderStatus(status);
+        if (lastState && status.state !== lastState) {
+          logActivity(`${stateLabels[status.state] || status.state}：${status.message || status.target_version || "任务状态已更新"}`);
+          if (["completed", "failed", "canceled"].includes(status.state))
+            refreshLocalVersions(true);
+        }
+        lastState = status.state;
+      } catch (error) {
+        logActivity(`状态推送解析失败：${error.message}`);
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (statusSocket !== socket) return;
+      setConnection(false, "WebSocket 已断开，正在重连");
+      reconnectTimer = window.setTimeout(connectStatusSocket, 2000);
+    });
+    socket.addEventListener("error", () => socket.close());
+  } catch (error) {
+    setConnection(false, error.message);
+    reconnectTimer = window.setTimeout(connectStatusSocket, 2000);
+  }
+}
+
+function loadSettings() {
+  elements.apiBase.value = localStorage.getItem("codeit.apiBase") || defaultApiBase();
+  elements.serverUrl.value = localStorage.getItem("codeit.serverUrl") || "";
+  elements.packageType.value = localStorage.getItem("codeit.packageType") || "codeit-deploy";
+  elements.channel.value = localStorage.getItem("codeit.channel") || "test";
+  renderPackageContext();
+}
+
+function renderPackageContext() {
+  const selected = packageCatalog.find((item) => item.id === elements.packageType.value);
+  const frontend = selected?.type === "frontend";
+  const label = selected?.label || elements.packageType.value;
+  document.body.dataset.packageType = frontend ? "frontend" : "codeit-deploy";
+  elements.packageHint.textContent = selected
+    ? `${selected.type}${selected.name ? ` / ${selected.name}` : ""} · ${selected.install_path}`
+    : "等待读取软件包配置";
+  elements.remoteTitle.textContent = `${label} 可用版本`;
+  elements.localTitle.textContent = `${label} 已下载版本`;
+  elements.packageOptions.querySelectorAll("[data-package-type]").forEach((button) => {
+    const active = button.dataset.packageType === elements.packageType.value;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function renderPackageSelector() {
+  elements.packageOptions.replaceChildren();
+  packageCatalog.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.packageType = item.id;
+    const title = document.createElement("strong");
+    title.textContent = item.label || item.id;
+    const detail = document.createElement("small");
+    detail.textContent = item.name || item.type;
+    button.append(title, detail);
+    button.addEventListener("click", () => selectPackageType(item.id));
+    elements.packageOptions.append(button);
+  });
+  renderPackageContext();
+}
+
+async function refreshPackageCatalog() {
+  packageCatalog = await api("/packages");
+  if (!Array.isArray(packageCatalog) || !packageCatalog.length)
+    throw new Error("插件配置中没有可管理的软件包");
+  if (!packageCatalog.some((item) => item.id === elements.packageType.value))
+    elements.packageType.value = packageCatalog[0].id;
+  renderPackageSelector();
+}
+
+function selectPackageType(type) {
+  if (!packageCatalog.some((item) => item.id === type)) return;
+  elements.packageType.value = type;
+  renderPackageContext();
+  saveSettings(false);
+  remotePackages = [];
+  localVersionNames = new Set();
+  renderEmpty(elements.remoteVersions, "尚未查询云端版本", "点击“查询云端版本”刷新当前类型");
+  refreshAll();
+}
+
+function saveSettings(showMessage = true) {
+  const apiBase = elements.apiBase.value.trim().replace(/\/+$/, "");
+  const serverUrl = elements.serverUrl.value.trim().replace(/\/+$/, "");
+  elements.apiBase.value = apiBase;
+  elements.serverUrl.value = serverUrl;
+  localStorage.setItem("codeit.apiBase", apiBase);
+  localStorage.setItem("codeit.serverUrl", serverUrl);
+  localStorage.setItem("codeit.packageType", elements.packageType.value);
+  localStorage.setItem("codeit.channel", elements.channel.value);
+  if (showMessage) {
+    toast("连接配置已保存");
+    logActivity("更新了连接配置");
+    refreshPackageCatalog()
+      .then(() => refreshAll())
+      .then(() => connectStatusSocket())
+      .catch((error) => {
+        setConnection(false, error.message);
+        toast(error.message, true);
+      });
+  }
+}
+
+async function api(path, options = {}) {
+  const base = elements.apiBase.value.trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(base)) throw new Error("请填写有效的本机插件 API 地址");
+  const init = { method: options.method || "GET", headers: { Accept: "application/json" } };
+  if (options.body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(options.body);
+  }
+  const response = await fetch(`${base}${path}`, init);
+  let payload;
+  try { payload = await response.json(); }
+  catch { throw new Error(`服务返回了无法解析的响应（HTTP ${response.status}）`); }
+  if (!response.ok || payload.code === -1) {
+    throw new Error(payload.message || payload.error || `请求失败（HTTP ${response.status}）`);
+  }
+  return payload.data ?? payload;
+}
+
+function requestContext() {
+  const context = {
+    package: elements.packageType.value,
+    channel: elements.channel.value,
+  };
+  const serverUrl = elements.serverUrl.value.trim();
+  if (serverUrl) context.server_url = serverUrl;
+  return context;
+}
+
+async function refreshStatus(silent = false) {
+  try {
+    const status = await api(`/status?package=${encodeURIComponent(elements.packageType.value)}`);
+    setConnection(true);
+    renderStatus(status);
+    if (lastState && status.state !== lastState) {
+      logActivity(`${stateLabels[status.state] || status.state}：${status.message || status.target_version || "任务状态已更新"}`);
+      if (["completed", "failed", "canceled"].includes(status.state)) refreshLocalVersions(true);
+    }
+    lastState = status.state;
+    return status;
+  } catch (error) {
+    setConnection(false, error.message);
+    if (!silent) toast(error.message, true);
+    return null;
+  }
+}
+
+function renderStatus(status) {
+  const progress = Math.max(0, Math.min(100, Number(status.progress) || 0));
+  elements.activeVersion.textContent = status.active_version || "未设置";
+  elements.deployRoot.textContent = status.deploy_root || "部署目录未知";
+  elements.taskState.textContent = stateLabels[status.state] || status.state || "未知";
+  elements.taskState.dataset.state = status.state || "idle";
+  elements.targetVersion.textContent = status.target_version || "暂无任务";
+  elements.taskMessage.textContent = status.message || "可以从下方选择云端版本开始下载。";
+  elements.progressValue.textContent = Math.round(progress).toString();
+  elements.progressBar.style.width = `${progress}%`;
+  elements.progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
+  elements.downloadBytes.textContent = `${formatBytes(status.downloaded_bytes)} / ${formatBytes(status.total_bytes)}`;
+  const system = status.system || {};
+  elements.systemProfile.textContent = [system.arch, system.platform, system.os].filter(Boolean).join(" · ") || "等待插件识别";
+  elements.cancelButton.disabled = !busyStates.has(status.state);
+  renderPhases(status.state);
+  document.querySelectorAll(".download-action, .switch-action").forEach((button) => {
+    button.disabled = busyStates.has(status.state);
+  });
+}
+
+function renderPhases(currentState) {
+  const currentIndex = phases.indexOf(currentState);
+  elements.phaseList.querySelectorAll("li").forEach((item, index) => {
+    item.classList.toggle("active", index === currentIndex);
+    item.classList.toggle("done", currentState === "completed" || index < currentIndex);
+  });
+}
+
+async function refreshRemoteVersions() {
+  saveSettings(false);
+  const type = elements.packageType.value;
+  elements.refreshRemoteButton.disabled = true;
+  elements.refreshRemoteButton.textContent = "正在查询…";
+  try {
+    const manifest = await api("/remote", { method: "POST", body: requestContext() });
+    remotePackages = manifest.packages || [];
+    renderRemoteVersions(remotePackages);
+    logActivity(`${type} 查询到 ${manifest.packages?.length || 0} 个云端版本`);
+    toast(`${type} 云端版本已更新`);
+  } catch (error) {
+    renderEmpty(elements.remoteVersions, "云端查询失败", error.message);
+    toast(error.message, true);
+    logActivity(`云端查询失败：${error.message}`);
+  } finally {
+    elements.refreshRemoteButton.disabled = false;
+    elements.refreshRemoteButton.textContent = "查询云端版本";
+  }
+}
+
+function renderRemoteVersions(packages) {
+  elements.remoteVersions.replaceChildren();
+  if (!packages.length) return renderEmpty(elements.remoteVersions, "没有可用版本", "当前通道尚未发布软件包");
+  packages.forEach((pkg) => {
+    const card = createVersionCard(pkg.version, {
+      tag: pkg.is_latest ? "LATEST / 最新" : "PREVIOUS / 上一版本",
+      metadata: [`${formatBytes(pkg.size)}`, shortHash(pkg.sha256)],
+      active: false,
+    });
+    const actions = document.createElement("div");
+    actions.className = "version-actions";
+
+    const activateLabel = document.createElement("label");
+    const activate = document.createElement("input");
+    activate.type = "checkbox";
+    activate.checked = pkg.is_latest === true;
+    activateLabel.append(activate, document.createTextNode("下载后切换"));
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "card-button download-action";
+    const installed = localVersionNames.has(pkg.version.replace(/\.zip$/, ""));
+    button.textContent = installed ? "已下载" : "下载版本 →";
+    button.disabled = installed || busyStates.has(lastState);
+    button.addEventListener("click", () => startDownload(pkg.version, activate.checked));
+    actions.append(activateLabel, button);
+    card.append(actions);
+    elements.remoteVersions.append(card);
+  });
+}
+
+async function startDownload(version, activate) {
+  const type = elements.packageType.value;
+  try {
+    await api("/download", {
+      method: "POST",
+      body: { ...requestContext(), version, activate },
+    });
+    toast(`${type} ${version} 已加入下载队列`);
+    logActivity(`开始下载 ${type} ${version}${activate ? "，完成后自动切换" : ""}`);
+    await refreshStatus(true);
+  } catch (error) {
+    toast(error.message, true);
+    logActivity(`下载任务创建失败：${error.message}`);
+  }
+}
+
+async function cancelDownload() {
+  elements.cancelButton.disabled = true;
+  try {
+    await api("/cancel", { method: "POST", body: {} });
+    toast("取消请求已提交");
+    logActivity("请求取消当前下载任务");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function refreshLocalVersions(silent = false) {
+  elements.refreshLocalButton.disabled = true;
+  try {
+    const data = await api(`/versions?package=${encodeURIComponent(elements.packageType.value)}`);
+    setConnection(true);
+    renderLocalVersions(data.versions || [], data.active_version || "");
+  } catch (error) {
+    setConnection(false, error.message);
+    renderEmpty(elements.localVersions, "无法读取本地版本", error.message);
+    if (!silent) toast(error.message, true);
+  } finally {
+    elements.refreshLocalButton.disabled = false;
+  }
+}
+
+function renderLocalVersions(versions, activeVersion) {
+  localVersionNames = new Set(versions.map((item) => item.version));
+  elements.localVersions.replaceChildren();
+  if (!versions.length) {
+    renderEmpty(elements.localVersions, "尚无本地版本", "请先从云端下载一个版本");
+    if (remotePackages.length) renderRemoteVersions(remotePackages);
+    return;
+  }
+  versions.forEach((item) => {
+    const isActive = item.active || item.version === activeVersion;
+    const card = createVersionCard(item.version, {
+      tag: isActive ? "ACTIVE / 当前版本" : "LOCAL / 本地版本",
+      metadata: [formatBytes(item.size), isActive ? "正在使用" : "可随时切换"],
+      active: isActive,
+    });
+    const actions = document.createElement("div");
+    actions.className = "version-actions";
+    const hint = document.createElement("span");
+    hint.className = "tag";
+    hint.textContent = isActive ? "CURRENT" : "READY";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "card-button switch-action";
+    button.textContent = isActive ? "当前版本" : "切换到此版本 →";
+    button.disabled = isActive || busyStates.has(lastState);
+    button.addEventListener("click", () => switchVersion(item.version));
+    actions.append(hint, button);
+    card.append(actions);
+    elements.localVersions.append(card);
+  });
+  if (remotePackages.length) renderRemoteVersions(remotePackages);
+}
+
+async function switchVersion(version) {
+  const type = elements.packageType.value;
+  if (!window.confirm(`确定将 ${type} 切换到 ${version}？`)) return;
+  try {
+    await api("/switch", { method: "POST", body: { package: type, version } });
+    toast(`${type} 已切换到 ${version}`);
+    logActivity(`${type} 当前版本切换为 ${version}`);
+    await Promise.all([refreshStatus(true), refreshLocalVersions(true)]);
+  } catch (error) {
+    toast(error.message, true);
+    logActivity(`版本切换失败：${error.message}`);
+  }
+}
+
+function createVersionCard(version, options) {
+  const card = document.createElement("article");
+  card.className = `version-card${options.active ? " is-active" : ""}`;
+  const head = document.createElement("div");
+  head.className = "version-card-head";
+  const titleWrap = document.createElement("div");
+  const tag = document.createElement("span");
+  tag.className = `tag${options.active ? " active" : ""}`;
+  tag.textContent = options.tag;
+  const title = document.createElement("h3");
+  title.textContent = version;
+  titleWrap.append(tag, title);
+  head.append(titleWrap);
+  const metadata = document.createElement("div");
+  metadata.className = "version-card-meta";
+  options.metadata.forEach((text) => {
+    const span = document.createElement("span");
+    span.textContent = text;
+    metadata.append(span);
+  });
+  card.append(head, metadata);
+  return card;
+}
+
+function renderEmpty(container, title, detail = "") {
+  container.replaceChildren();
+  const card = document.createElement("div");
+  card.className = "empty-card";
+  const text = document.createElement("p");
+  text.textContent = title;
+  card.append(text);
+  if (detail) {
+    const small = document.createElement("small");
+    small.textContent = detail;
+    card.append(small);
+  }
+  container.append(card);
+}
+
+function setConnection(online, detail = "") {
+  elements.connection.dataset.state = online ? "online" : "offline";
+  elements.connectionText.textContent = online ? "本机服务在线" : "本机服务离线";
+  elements.connection.title = detail;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const number = bytes / 1024 ** index;
+  return `${number >= 100 || index === 0 ? number.toFixed(0) : number.toFixed(1)} ${units[index]}`;
+}
+
+function shortHash(hash) {
+  return hash ? `SHA ${hash.slice(0, 8)}` : "SHA —";
+}
+
+function toast(message, error = false) {
+  const item = document.createElement("div");
+  item.className = `toast${error ? " error" : ""}`;
+  item.textContent = message;
+  elements.toastRegion.append(item);
+  window.setTimeout(() => item.remove(), 4200);
+}
+
+function logActivity(message) {
+  const item = document.createElement("li");
+  const time = document.createElement("time");
+  time.textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  const text = document.createElement("span");
+  text.textContent = message;
+  item.append(time, text);
+  elements.activityLog.prepend(item);
+  while (elements.activityLog.children.length > 30) elements.activityLog.lastElementChild.remove();
+}
+
+async function refreshAll() {
+  await Promise.all([refreshStatus(true), refreshLocalVersions(true)]);
+}
+
+elements.saveSettingsButton.addEventListener("click", () => saveSettings(true));
+elements.refreshRemoteButton.addEventListener("click", refreshRemoteVersions);
+elements.refreshLocalButton.addEventListener("click", () => refreshLocalVersions(false));
+elements.cancelButton.addEventListener("click", cancelDownload);
+elements.clearLogButton.addEventListener("click", () => elements.activityLog.replaceChildren());
+async function startConsole() {
+  loadSettings();
+  try {
+    await refreshPackageCatalog();
+    await refreshAll();
+    connectStatusSocket();
+  } catch (error) {
+    setConnection(false, error.message);
+    toast(error.message, true);
+    logActivity(`初始化失败：${error.message}`);
+  }
+}
+
+startConsole();
+window.addEventListener("beforeunload", () => {
+  window.clearTimeout(reconnectTimer);
+  if (statusSocket) statusSocket.close();
+});
+
+    </script>
+  </body>
+</html>
